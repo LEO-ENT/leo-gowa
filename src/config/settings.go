@@ -62,6 +62,7 @@ var (
 	// so receivers are not asked to trust a key that ships in the documentation.
 	WhatsappWebhookSecret             = ""
 	WhatsappWebhookInsecureSkipVerify = false          // Skip TLS certificate verification for webhooks (insecure)
+	WhatsappWebhookDeviceFailClosed   = false          // Suppress global fallback when a device has no valid per-device webhook config
 	WhatsappWebhookEvents             []string         // Whitelist of events to forward to webhook (empty = all events)
 	WhatsappWebhookIgnoreJids         []string         // JIDs (or "@g.us"/"@s.whatsapp.net"/"@lid" wildcards) to skip when forwarding to webhooks
 	WhatsappWebhookAllDeviceReceipts           = false // Forward receipts from all linked devices, not only the primary device

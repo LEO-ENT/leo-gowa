@@ -87,11 +87,12 @@ func TestDeviceEventSQLBlockedLookupDoesNotHoldLogout(t *testing.T) {
 	}
 	<-websocket.Broadcast
 	<-done
+	// LEO fail-closed (patch 86345a6): a device webhook lookup that cannot be
+	// resolved must never fall back to the global webhook.
 	select {
 	case url := <-got:
-		require.Equal(t, "https://global.test/hook", url)
+		t.Fatalf("unresolved device webhook config fell back to %s", url)
 	case <-time.After(time.Second):
-		t.Fatal("missing fallback webhook")
 	}
 	require.Empty(t, inst.JID())
 }

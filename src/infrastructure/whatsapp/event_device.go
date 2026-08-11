@@ -120,13 +120,13 @@ func forwardDeviceEvent(ctx context.Context, eventName string, instance *DeviceI
 		body["device_id"] = jid
 	}
 	lookupCtx, cancelLookup := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	webhookConfig := instanceWebhookConfig(lookupCtx, instance)
+	webhookConfig, configErr := instanceWebhookConfig(lookupCtx, instance)
 	cancelLookup()
 
 	go func() {
 		webhookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		if err := forwardPayloadWithWebhookConfig(webhookCtx, body, eventName, webhookConfig); err != nil {
+		if err := forwardPayloadWithResolvedWebhookConfig(webhookCtx, body, eventName, webhookConfig, configErr); err != nil {
 			logrus.Errorf("Failed to forward %s event to webhook: %v", eventName, err)
 		}
 	}()
@@ -134,18 +134,17 @@ func forwardDeviceEvent(ctx context.Context, eventName string, instance *DeviceI
 
 // instanceWebhookConfig uses the stable slot ID, which survives logout and re-pairing.
 // A companion or bare JID may be stale or belong to another slot on the same number.
-func instanceWebhookConfig(ctx context.Context, instance *DeviceInstance) *domainChatStorage.DeviceWebhookConfig {
+// LEO fail-closed: a lookup or validation failure is returned as an error and suppresses
+// the generic webhook legs instead of falling back to the global webhook.
+func instanceWebhookConfig(ctx context.Context, instance *DeviceInstance) (*domainChatStorage.DeviceWebhookConfig, error) {
 	repo := instance.GetChatStorage()
 	if repo == nil {
-		return nil
+		return nil, nil
 	}
 	webhookConfig, err := repo.GetDeviceWebhookConfig(ctx, instance.ID())
 	if err != nil {
-		logrus.Warnf("Failed to get webhook config for device %s, falling back to global config: %v", instance.ID(), err)
-		return nil
+		logrus.Warn("Device webhook configuration could not be resolved; generic webhook delivery suppressed")
+		return nil, errDeviceWebhookConfigUnavailable
 	}
-	if webhookConfig == nil || webhookConfig.WebhookURL == nil || *webhookConfig.WebhookURL == "" {
-		return nil
-	}
-	return webhookConfig
+	return validatedWebhookConfig(webhookConfig)
 }

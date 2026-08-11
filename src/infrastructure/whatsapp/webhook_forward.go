@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"maps"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +21,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
+)
+
+var (
+	errDeviceWebhookConfigUnavailable = errors.New("device webhook configuration unavailable")
+	errDeviceWebhookConfigInvalid     = errors.New("device webhook configuration invalid")
 )
 
 var (
@@ -161,8 +167,8 @@ func getContactMutex(phone string) *sync.Mutex {
 }
 
 // forwardPayloadToConfiguredWebhooks attempts to deliver the provided payload to every configured webhook URL.
-// It only returns an error when all webhook deliveries fail. Partial failures are logged and suppressed so
-// successful targets still receive the event.
+// It returns an error when all webhook deliveries fail or when a device-specific config cannot be resolved safely.
+// Partial delivery failures are logged and suppressed so successful targets still receive the event.
 func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]any, eventName string) error {
 	deviceJID, _ := payload["device_id"].(string)
 	webhookConfig, err := webhookConfigForPayload(ctx, payload)
@@ -173,25 +179,46 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 		return nil
 	}
 	if err != nil {
-		// A config lookup failure is not a delivery failure: fall back to the global
-		// webhook config so the event still reaches the global targets and Chatwoot.
-		logrus.Warnf("Failed to get webhook config for device %s, falling back to global config: %v", deviceJID, err)
+		// A lookup or validation failure must never turn into a cross-device delivery
+		// via the global webhook. Keep the log free of the JID, URL and backend error:
+		// any of those values may carry tenant identifiers or credentials.
+		logrus.Warn("Device webhook configuration could not be resolved; generic webhook delivery suppressed")
 		webhookConfig = nil
 	}
-	return forwardPayloadWithWebhookConfig(ctx, payload, eventName, webhookConfig)
+	return forwardPayloadWithResolvedWebhookConfig(ctx, payload, eventName, webhookConfig, err)
 }
 
 // forwardPayloadWithWebhookConfig is forwardPayloadToConfiguredWebhooks with the device's
 // webhook config already resolved, for callers that must look it up before the device
 // record changes.
 func forwardPayloadWithWebhookConfig(ctx context.Context, payload map[string]any, eventName string, webhookConfig *domainChatStorage.DeviceWebhookConfig) error {
+	return forwardPayloadWithResolvedWebhookConfig(ctx, payload, eventName, webhookConfig, nil)
+}
+
+// forwardPayloadWithResolvedWebhookConfig delivers with an already resolved device config.
+// LEO fail-closed policy: a non-nil resolveErr (lookup or validation failure) suppresses
+// every generic webhook leg, device and global alike, so the event can never be delivered
+// cross-device via the global webhook. Chatwoot keeps its own per-device resolution. The
+// resolve error is returned so the caller (and the managed spool) can see the failure.
+func forwardPayloadWithResolvedWebhookConfig(ctx context.Context, payload map[string]any, eventName string, webhookConfig *domainChatStorage.DeviceWebhookConfig, resolveErr error) error {
+	deviceJID, _ := payload["device_id"].(string)
 	jidAllowed := !shouldIgnoreWebhookJID(payload)
-	webhookAllowed := jidAllowed && isEventWhitelistedForDevice(eventName, webhookConfig)
+	webhookAllowed := resolveErr == nil && jidAllowed && isEventWhitelistedForDevice(eventName, webhookConfig)
 	chatwootAllowed := config.ChatwootEnabled && shouldForwardEventToChatwoot(eventName) && isEventWhitelistedForChatwoot(eventName)
 
 	webhookURLs := getWebhookURLsFromConfig(webhookConfig)
 	if len(webhookURLs) == 0 {
-		webhookURLs = config.WhatsappWebhook
+		if config.WhatsappWebhookDeviceFailClosed && strings.TrimSpace(deviceJID) != "" {
+			// Migration gate: a device-bearing event without a valid per-device
+			// destination is intentionally dropped. With the gate disabled the
+			// historical global fallback remains unchanged.
+			if webhookAllowed {
+				logrus.Warn("Device webhook is not configured; global fallback suppressed by fail-closed policy")
+			}
+			webhookAllowed = false
+		} else {
+			webhookURLs = config.WhatsappWebhook
+		}
 	}
 
 	// With WHATSAPP_WEBHOOK_DEVICE_MERGE_GLOBAL a per-device webhook is an addition
@@ -199,7 +226,7 @@ func forwardPayloadWithWebhookConfig(ctx context.Context, payload map[string]any
 	// event, signed with the global secret and filtered by the global event
 	// whitelist, while the device URL keeps its own secret and event filter.
 	var globalURLs []string
-	if config.WhatsappWebhookDeviceMergeGlobal && webhookConfig != nil && jidAllowed &&
+	if resolveErr == nil && config.WhatsappWebhookDeviceMergeGlobal && webhookConfig != nil && jidAllowed &&
 		isEventWhitelistedForDevice(eventName, nil) {
 		// Only dedup against the device URLs when the device leg is actually going to
 		// deliver. A global URL that happens to equal the device URL is still a global
@@ -214,6 +241,9 @@ func forwardPayloadWithWebhookConfig(ctx context.Context, payload map[string]any
 	globalAllowed := len(globalURLs) > 0
 
 	if !webhookAllowed && !globalAllowed && !chatwootAllowed {
+		if resolveErr != nil {
+			return resolveErr
+		}
 		logrus.Debugf("Skipping event %s - not allowed for webhooks or Chatwoot", eventName)
 		return nil
 	}
@@ -269,6 +299,9 @@ func forwardPayloadWithWebhookConfig(ctx context.Context, payload map[string]any
 		go forwardToChatwoot(ctx, payload, eventName)
 	}
 
+	if resolveErr != nil {
+		return resolveErr
+	}
 	return webhookErr
 }
 
@@ -303,10 +336,10 @@ func webhookConfigForPayload(ctx context.Context, payload map[string]any) (*doma
 		if ad != "" && ad != payloadID {
 			rec, err := getDeviceRecordForTest(ad)
 			if err != nil {
-				return nil, err
+				return nil, errDeviceWebhookConfigUnavailable
 			}
 			if rec != nil {
-				return webhookConfigFromRecord(rec), nil
+				return validatedWebhookConfig(webhookConfigFromRecord(rec))
 			}
 			bare := inst.JID()
 			if bare == "" {
@@ -347,7 +380,7 @@ func webhookConfigFromRecord(record *domainChatStorage.DeviceRecord) *domainChat
 	if record == nil || record.WebhookURL == nil || *record.WebhookURL == "" {
 		return nil
 	}
-	logrus.Debugf("Using device-specific webhook config for %s", record.DeviceID)
+	logrus.Debug("Using device-specific webhook configuration")
 	return &domainChatStorage.DeviceWebhookConfig{
 		WebhookURL:                record.WebhookURL,
 		WebhookSecret:             record.WebhookSecret,
@@ -366,9 +399,34 @@ func getWebhookConfigForDevice(deviceJID string) (*domainChatStorage.DeviceWebho
 
 	record, err := getDeviceRecordForTest(deviceJID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get device record: %w", err)
+		return nil, errDeviceWebhookConfigUnavailable
 	}
-	return webhookConfigFromRecord(record), nil
+	return validatedWebhookConfig(webhookConfigFromRecord(record))
+}
+
+// validatedWebhookConfig applies the LEO fail-closed URL policy to a device config:
+// a stored URL that is not an absolute http(s) URL without userinfo is an error, never
+// a silent fallback to the global webhook. A nil config stays nil (no device webhook).
+func validatedWebhookConfig(cfg *domainChatStorage.DeviceWebhookConfig) (*domainChatStorage.DeviceWebhookConfig, error) {
+	if cfg == nil || cfg.WebhookURL == nil || *cfg.WebhookURL == "" {
+		return nil, nil
+	}
+	webhookURL, err := validatedDeviceWebhookURL(*cfg.WebhookURL)
+	if err != nil {
+		return nil, errDeviceWebhookConfigInvalid
+	}
+	validated := *cfg
+	validated.WebhookURL = &webhookURL
+	return &validated, nil
+}
+
+func validatedDeviceWebhookURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.ParseRequestURI(trimmed)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return "", errDeviceWebhookConfigInvalid
+	}
+	return trimmed, nil
 }
 
 // getWebhookURLsFromConfig extracts webhook URLs from the config.
@@ -483,21 +541,20 @@ func forwardToWebhooks(ctx context.Context, payload map[string]any, eventName st
 		return nil
 	}
 
-	var (
-		failed    []string
-		successes int
-	)
-	for _, url := range webhookURLs {
-		if err := submitWebhookFn(ctx, payload, url, webhookConfig); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", url, err))
-			logrus.Warnf("Failed forwarding %s to %s: %v", eventName, url, err)
+	var failed, successes int
+	for _, webhookURL := range webhookURLs {
+		if err := submitWebhookFn(ctx, payload, webhookURL, webhookConfig); err != nil {
+			failed++
+			// Do not log the configured URL or the returned error: both can embed
+			// credentials, query tokens, tenant paths or device JIDs.
+			logrus.Warnf("Failed forwarding %s to a configured webhook", eventName)
 			continue
 		}
 		successes++
 	}
 
-	if len(failed) > 0 {
-		logrus.Warnf("Some webhook URLs failed for %s (succeeded: %d/%d): %s", eventName, successes, total, strings.Join(failed, "; "))
+	if failed > 0 {
+		logrus.Warnf("Some webhook deliveries failed for %s (succeeded: %d/%d)", eventName, successes, total)
 		// Return error only if ALL webhooks failed
 		if successes == 0 {
 			return fmt.Errorf("all %d webhook(s) failed for %s", total, eventName)
