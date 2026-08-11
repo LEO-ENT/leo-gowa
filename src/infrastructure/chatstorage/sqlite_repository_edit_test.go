@@ -8,7 +8,7 @@ import (
 
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -259,7 +259,7 @@ func TestCreateMessageEditAllowsOwnAccountAcrossSenderStrings(t *testing.T) {
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open(sqlite.DriverName, ":memory:")
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
