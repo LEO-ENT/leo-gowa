@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
@@ -118,13 +117,9 @@ func handleDeleteForMe(ctx context.Context, evt *events.DeleteForMe, chatStorage
 	}
 
 	// Send webhook notification for delete event
-	go func(c *whatsmeow.Client) {
-		webhookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if err := forwardDeleteToWebhook(webhookCtx, evt, message, deviceID, c); err != nil {
-			log.Errorf("Failed to forward delete event to webhook: %v", err)
-		}
-	}(client)
+	dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
+		return forwardDeleteToWebhook(webhookCtx, evt, message, deviceID, client)
+	})
 }
 
 // deleteStoredMessageForMe removes one device's stored copy of a message after
@@ -368,13 +363,9 @@ func handleReceipt(ctx context.Context, evt *events.Receipt, deviceID string, cl
 	// Forward receipt (ack) event to webhook or Chatwoot if configured
 	// Note: Receipt events are not rate limited as they are critical for message delivery status
 	if sendReceipt {
-		go func(e *events.Receipt, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-			if err := forwardReceiptToWebhook(webhookCtx, e, deviceID, c); err != nil {
-				logrus.Errorf("Failed to forward ack event to webhook: %v", err)
-			}
-		}(evt, client)
+		dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
+			return forwardReceiptToWebhook(webhookCtx, evt, deviceID, client)
+		})
 	}
 }
 
@@ -382,13 +373,9 @@ func handleAppState(ctx context.Context, evt *events.AppState, deviceID string, 
 	log.Debugf("App state event: %+v / %+v", evt.Index, evt.SyncActionValue)
 
 	if isLabelAppState(evt) {
-		go func(e *events.AppState, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-			if err := forwardLabelAppStateToWebhook(webhookCtx, e, deviceID, c); err != nil {
-				logrus.Errorf("Failed to forward label appstate event to webhook: %v", err)
-			}
-		}(evt, client)
+		dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
+			return forwardLabelAppStateToWebhook(webhookCtx, evt, deviceID, client)
+		})
 	}
 }
 
@@ -424,11 +411,7 @@ func handleGroupInfo(ctx context.Context, evt *events.GroupInfo, deviceID string
 	}
 
 	// Forward group info event to webhook
-	go func(e *events.GroupInfo, c *whatsmeow.Client) {
-		webhookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if err := forwardGroupInfoToWebhook(webhookCtx, e, deviceID, c); err != nil {
-			logrus.Errorf("Failed to forward group info event to webhook: %v", err)
-		}
-	}(evt, client)
+	dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
+		return forwardGroupInfoToWebhook(webhookCtx, evt, deviceID, client)
+	})
 }

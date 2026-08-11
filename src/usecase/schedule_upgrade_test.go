@@ -21,7 +21,7 @@ func TestScheduleUpgradeDoesNotReplayLegacyUnknownAttempts(t *testing.T) {
 				db, err := sql.Open(sqlite.DriverName, filepath.Join(t.TempDir(), "legacy.db"))
 				require.NoError(t, err)
 				defer db.Close()
-				schema, err := os.ReadFile("testdata/chatstorage_v49.sql")
+				schema, err := os.ReadFile("testdata/chatstorage_v49_leo.sql") // LEO: positional schema with the LEO migration block
 				require.NoError(t, err)
 				_, err = db.Exec(string(schema))
 				require.NoError(t, err)

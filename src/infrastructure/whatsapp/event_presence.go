@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -25,13 +24,9 @@ func handlePresence(ctx context.Context, evt *events.Presence, deviceID string, 
 	}
 
 	// Forward presence event to webhook
-	go func(e *events.Presence, c *whatsmeow.Client) {
-		webhookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if err := forwardPresenceToWebhook(webhookCtx, e, deviceID, c); err != nil {
-			logrus.Errorf("Failed to forward presence event to webhook: %v", err)
-		}
-	}(evt, client)
+	dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
+		return forwardPresenceToWebhook(webhookCtx, evt, deviceID, client)
+	})
 }
 
 // createPresencePayload creates a webhook payload for presence (online/offline) events.

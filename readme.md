@@ -187,7 +187,7 @@ release notes and `GET /app/info` when using a pinned binary or container tag.
   - When a device has a custom webhook, events for that device are sent to the device-specific URL.
   - When no device webhook is set, events fall back to the global webhook (`--webhook`).
   - Set `webhook_url` to an empty string with `PATCH` to clear it and use the global webhook.
-  - LEO: enable `--webhook-device-fail-closed=true` or `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED=true` to suppress the global fallback for every event carrying a device ID.
+  - LEO: enable `--webhook-device-fail-closed=true` or `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED=true` only with the managed per-device keyring/codec installed. This selects the encrypted durable source spool and suppresses every global/direct fallback; `/health` remains `503` if the codec or worker is unavailable.
   - LEO: a storage lookup failure or an invalid device webhook URL always fails closed and never falls back globally, regardless of the compatibility gate.
   - LEO: webhook secrets are write-only: create/update/get responses expose only `webhook_secret_configured`, never the stored secret.
   - Set `WHATSAPP_WEBHOOK_DEVICE_MERGE_GLOBAL=true` (or `--webhook-device-merge-global=true`) to make a
@@ -322,7 +322,7 @@ To use environment variables:
 | `WHATSAPP_WEBHOOK`                      | Webhook URL(s) for events (comma-separated)                   | -                                            | `WHATSAPP_WEBHOOK=https://webhook.site/xxx`   |
 | `WHATSAPP_WEBHOOK_SECRET`               | Webhook HMAC secret; generate one with `openssl rand -hex 32`. Empty or a published value (`secret`, `super-secret-key`, `your-private-key`) is replaced by a random per-process key | -            | `WHATSAPP_WEBHOOK_SECRET=<generated key>`    |
 | `WHATSAPP_WEBHOOK_INSECURE_SKIP_VERIFY` | Skip TLS verification for webhooks (insecure)                 | `false`                                      | `WHATSAPP_WEBHOOK_INSECURE_SKIP_VERIFY=true`  |
-| `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED`   | Suppress global fallback for device-bearing events without a valid device webhook | `false` | `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED=true` |
+| `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED`   | Select encrypted durable managed delivery; suppress global/direct fallback and fail readiness when its keyring/worker is unavailable | `false` | `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED=true` |
 | `WHATSAPP_WEBHOOK_EVENTS`               | Whitelist of events to forward (comma-separated, empty = all) | -                                            | `WHATSAPP_WEBHOOK_EVENTS=message,message.ack` |
 | `WHATSAPP_WEBHOOK_IGNORE_JIDS`          | JIDs/wildcards to skip when forwarding (comma-separated)      | -                                            | `WHATSAPP_WEBHOOK_IGNORE_JIDS=@g.us`          |
 | `WHATSAPP_WEBHOOK_ALL_DEVICE_RECEIPTS`  | Forward all linked-device receipts; consumers must handle duplicates and out-of-order updates   | `false`                                      | `WHATSAPP_WEBHOOK_ALL_DEVICE_RECEIPTS=true`   |

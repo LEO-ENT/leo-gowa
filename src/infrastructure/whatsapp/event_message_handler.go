@@ -10,7 +10,6 @@ import (
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
-	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -237,11 +236,7 @@ func handleWebhookForward(ctx context.Context, evt *events.Message, client *what
 	if len(preparedPoll) > 0 {
 		pollPayload = preparedPoll[0]
 	}
-	go func(e *events.Message, c *whatsmeow.Client, poll *webhookPollPayload) {
-		webhookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if err := forwardMessageToWebhook(webhookCtx, c, e, poll); err != nil {
-			logrus.Error("Failed forward to webhook: ", err)
-		}
-	}(evt, client, pollPayload)
+	dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
+		return forwardMessageToWebhook(webhookCtx, client, evt, pollPayload)
+	})
 }

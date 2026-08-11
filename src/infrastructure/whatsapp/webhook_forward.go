@@ -26,6 +26,7 @@ import (
 var (
 	errDeviceWebhookConfigUnavailable = errors.New("device webhook configuration unavailable")
 	errDeviceWebhookConfigInvalid     = errors.New("device webhook configuration invalid")
+	errManagedWebhookAdmissionFailed  = errors.New("managed webhook durable admission failed")
 )
 
 var (
@@ -50,7 +51,8 @@ var (
 	// sessionIDForJIDFn resolves the operator-facing session id (the device_id
 	// registered via POST /devices, e.g. "org_2") for a connected WhatsApp JID.
 	// It is a seam so tests can stub the device-manager lookup.
-	sessionIDForJIDFn = sessionIDForJID
+	sessionIDForJIDFn   = sessionIDForJID
+	forwardToChatwootFn = forwardToChatwoot
 )
 
 // mutexShardCount is the number of mutex shards for contact synchronization.
@@ -170,12 +172,12 @@ func getContactMutex(phone string) *sync.Mutex {
 // It returns an error when all webhook deliveries fail or when a device-specific config cannot be resolved safely.
 // Partial delivery failures are logged and suppressed so successful targets still receive the event.
 func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]any, eventName string) error {
-	deviceJID, _ := payload["device_id"].(string)
 	webhookConfig, err := webhookConfigForPayload(ctx, payload)
 	if errors.Is(err, errAmbiguousWebhookDevice) {
 		// Sibling companion slots share the bare account JID. Delivering with the
 		// global policy would replace the originating slot's event filter.
-		logrus.Warnf("Skipping event %s: %v (device_id=%s)", eventName, err, deviceJID)
+		// LEO: the device JID stays out of the log (PII boundary).
+		logrus.Warnf("Skipping event %s: %v", eventName, err)
 		return nil
 	}
 	if err != nil {
@@ -201,18 +203,22 @@ func forwardPayloadWithWebhookConfig(ctx context.Context, payload map[string]any
 // cross-device via the global webhook. Chatwoot keeps its own per-device resolution. The
 // resolve error is returned so the caller (and the managed spool) can see the failure.
 func forwardPayloadWithResolvedWebhookConfig(ctx context.Context, payload map[string]any, eventName string, webhookConfig *domainChatStorage.DeviceWebhookConfig, resolveErr error) error {
-	deviceJID, _ := payload["device_id"].(string)
+	// WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED selects LEO managed delivery: the device leg
+	// is admitted to the durable spool, and no global or direct in-process leg runs.
+	managedDelivery := config.WhatsappWebhookDeviceFailClosed
 	jidAllowed := !shouldIgnoreWebhookJID(payload)
 	webhookAllowed := resolveErr == nil && jidAllowed && isEventWhitelistedForDevice(eventName, webhookConfig)
 	chatwootAllowed := config.ChatwootEnabled && shouldForwardEventToChatwoot(eventName) && isEventWhitelistedForChatwoot(eventName)
 
+	var managedErr error
 	webhookURLs := getWebhookURLsFromConfig(webhookConfig)
 	if len(webhookURLs) == 0 {
-		if config.WhatsappWebhookDeviceFailClosed && strings.TrimSpace(deviceJID) != "" {
-			// Migration gate: a device-bearing event without a valid per-device
-			// destination is intentionally dropped. With the gate disabled the
-			// historical global fallback remains unchanged.
+		if managedDelivery {
+			// Migration gate: an event without a valid per-device destination is
+			// rejected. The managed route must never fall back to a global
+			// destination or a direct in-process delivery.
 			if webhookAllowed {
+				managedErr = errManagedWebhookAdmissionFailed
 				logrus.Warn("Device webhook is not configured; global fallback suppressed by fail-closed policy")
 			}
 			webhookAllowed = false
@@ -226,7 +232,7 @@ func forwardPayloadWithResolvedWebhookConfig(ctx context.Context, payload map[st
 	// event, signed with the global secret and filtered by the global event
 	// whitelist, while the device URL keeps its own secret and event filter.
 	var globalURLs []string
-	if resolveErr == nil && config.WhatsappWebhookDeviceMergeGlobal && webhookConfig != nil && jidAllowed &&
+	if resolveErr == nil && !managedDelivery && config.WhatsappWebhookDeviceMergeGlobal && webhookConfig != nil && jidAllowed &&
 		isEventWhitelistedForDevice(eventName, nil) {
 		// Only dedup against the device URLs when the device leg is actually going to
 		// deliver. A global URL that happens to equal the device URL is still a global
@@ -243,6 +249,9 @@ func forwardPayloadWithResolvedWebhookConfig(ctx context.Context, payload map[st
 	if !webhookAllowed && !globalAllowed && !chatwootAllowed {
 		if resolveErr != nil {
 			return resolveErr
+		}
+		if managedErr != nil {
+			return managedErr
 		}
 		logrus.Debugf("Skipping event %s - not allowed for webhooks or Chatwoot", eventName)
 		return nil
@@ -276,7 +285,17 @@ func forwardPayloadWithResolvedWebhookConfig(ctx context.Context, payload map[st
 
 	var webhookErr error
 	if webhookAllowed {
-		webhookErr = forwardToWebhooks(ctx, payload, eventName, webhookURLs, webhookConfig)
+		if managedDelivery {
+			if err := enqueueManagedWebhookWithRuntime(ctx, payload, eventName, webhookConfig); err != nil {
+				managedErr = errManagedWebhookAdmissionFailed
+				// This is the explicit pre-commit critical admission gap from D-028.
+				// The error remains generic so no URL, secret, JID, session, body, or
+				// backend detail reaches logs.
+				logrus.Error("CRITICAL managed webhook admission failed; delivery blocked and route not ready")
+			}
+		} else {
+			webhookErr = forwardToWebhooks(ctx, payload, eventName, webhookURLs, webhookConfig)
+		}
 	} else if chatwootAllowed {
 		logrus.Debugf("Skipping event %s for configured webhooks, but allowing Chatwoot", eventName)
 	}
@@ -296,13 +315,29 @@ func forwardPayloadWithResolvedWebhookConfig(ctx context.Context, payload map[st
 	}
 
 	if chatwootAllowed {
-		go forwardToChatwoot(ctx, payload, eventName)
+		dispatchChatwootForward(ctx, payload, eventName)
 	}
 
 	if resolveErr != nil {
 		return resolveErr
 	}
+	if managedErr != nil {
+		return managedErr
+	}
 	return webhookErr
+}
+
+// dispatchChatwootForward preserves device-scoped context values while
+// detaching Chatwoot from the managed admission deadline. The two delivery
+// paths are independent: stopping or completing source-spool admission must
+// not cancel an already selected Chatwoot forward.
+func dispatchChatwootForward(ctx context.Context, payload map[string]any, eventName string) {
+	detached := context.WithoutCancel(ctx)
+	chatwootCtx, cancel := context.WithTimeout(detached, 30*time.Second)
+	go func() {
+		defer cancel()
+		forwardToChatwootFn(chatwootCtx, payload, eventName)
+	}()
 }
 
 // webhookStorageForTest is injectable for unit testing without a real DeviceManager.
