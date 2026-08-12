@@ -223,6 +223,8 @@ func getVideoMetadata(videoPath string) videoMetadata {
 	return metadata
 }
 
+const providerReceiptStoreTimeout = 2 * time.Second
+
 type serviceSend struct {
 	appService       app.IAppUsecase
 	chatStorageRepo  domainChatStorage.IChatStorageRepository
@@ -306,6 +308,17 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 
 	// Store the sent message using chatstorage
 	senderJID := whatsapp.OwnSenderJID(client)
+
+	// A successful SendMessage return is a server acknowledgement and therefore
+	// durable positive evidence. Persist it before the asynchronous full-message
+	// write; failure cannot turn an already accepted send into a retryable error.
+	if service.chatStorageRepo != nil {
+		evidenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerReceiptStoreTimeout)
+		if err := service.chatStorageRepo.RecordProviderMessagePresent(evidenceCtx, deviceIDFromContext(ctx), ts.ID, ts.Timestamp); err != nil {
+			logrus.Warn("provider_message_receipt.storage_unavailable")
+		}
+		cancel()
+	}
 
 	// Store message asynchronously with timeout.
 	// Preserve device context (for device_id scoping) but detach from request cancellation.

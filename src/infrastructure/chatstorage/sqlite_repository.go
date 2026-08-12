@@ -10,6 +10,7 @@ import (
 	"time"
 
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
+	domainProvider "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/provider"
 	domainSpool "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/webhookspool"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/sqlite"
@@ -126,6 +127,64 @@ func (r *SQLiteRepository) GetMessageByIDAndDevice(deviceID, id string) (*domain
 	}
 
 	return message, err
+}
+
+// RecordProviderMessagePresent persists positive provider evidence. It is called
+// only after whatsmeow returns a server acknowledgement or after an authoritative
+// outgoing receipt. Recording an attempt before send would make this ledger lie.
+func (r *SQLiteRepository) RecordProviderMessagePresent(ctx context.Context, deviceID, providerMessageID string, observedAt time.Time) error {
+	if strings.TrimSpace(deviceID) == "" || strings.TrimSpace(providerMessageID) == "" {
+		return fmt.Errorf("provider message evidence requires device_id and provider_message_id")
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+
+	now := time.Now()
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO provider_message_receipts (
+			device_id, provider_message_id, observed_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(device_id, provider_message_id) DO UPDATE SET
+			observed_at = excluded.observed_at,
+			updated_at = excluded.updated_at
+	`, deviceID, providerMessageID, observedAt, now, now)
+	return err
+}
+
+// LookupProviderMessage checks durable positive authorities only. The sent-message
+// fallback covers rows written before the receipt ledger migration. Neither an
+// empty table nor absent history can prove the provider did not accept a send.
+func (r *SQLiteRepository) LookupProviderMessage(ctx context.Context, deviceID, providerMessageID string) (domainProvider.MessageLookup, error) {
+	unknown := domainProvider.MessageLookup{Status: domainProvider.MessageUnknown}
+	if strings.TrimSpace(deviceID) == "" || strings.TrimSpace(providerMessageID) == "" {
+		return unknown, fmt.Errorf("provider message lookup requires device_id and provider_message_id")
+	}
+
+	var found string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT provider_message_id
+		FROM provider_message_receipts
+		WHERE device_id = ? AND provider_message_id = ?
+		UNION ALL
+		SELECT id
+		FROM messages
+		WHERE device_id = ? AND id = ? AND is_from_me = TRUE
+		LIMIT 1
+	`, deviceID, providerMessageID, deviceID, providerMessageID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return unknown, nil
+	}
+	if err != nil {
+		return unknown, err
+	}
+	if found != providerMessageID {
+		return unknown, fmt.Errorf("provider message authority returned a mismatched identifier")
+	}
+	return domainProvider.MessageLookup{
+		Status:  domainProvider.MessagePresent,
+		Receipt: &domainProvider.MessageReceipt{ProviderMessageID: providerMessageID},
+	}, nil
 }
 
 // GetMessageEdits returns the edit history for a specific message.
@@ -2007,6 +2066,11 @@ func (r *SQLiteRepository) TruncateAllChats() error {
 		return fmt.Errorf("failed to delete scheduled sends: %w", err)
 	}
 
+	_, err = tx.Exec("DELETE FROM provider_message_receipts")
+	if err != nil {
+		return fmt.Errorf("failed to delete provider message receipts: %w", err)
+	}
+
 	// Delete messages after dependent rows to keep cleanup explicit.
 	_, err = tx.Exec("DELETE FROM messages")
 	if err != nil {
@@ -2056,6 +2120,10 @@ func (r *SQLiteRepository) DeleteDeviceData(deviceID string) error {
 
 	if _, err := tx.Exec(`DELETE FROM scheduled_sends WHERE device_id = ?`, deviceID); err != nil {
 		return fmt.Errorf("failed to delete device scheduled sends: %w", err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM provider_message_receipts WHERE device_id = ?`, deviceID); err != nil {
+		return fmt.Errorf("failed to delete device provider message receipts: %w", err)
 	}
 
 	// Delete messages after dependent rows via direct device_id filter.
@@ -3671,7 +3739,8 @@ func (r *SQLiteRepository) getMigrations() []string {
 		`CREATE INDEX IF NOT EXISTS idx_chatwoot_links_conversation_account ON chatwoot_message_links(chatwoot_conversation_id, chatwoot_account_id, updated_at)`,
 		// Migration 43: Count/delete message links by owning config without a full-table scan
 		`CREATE INDEX IF NOT EXISTS idx_chatwoot_links_config ON chatwoot_message_links(chatwoot_config_id)`,
-		// LEO patch queue: positions 44-46 are the LEO managed webhook spool and were
+		// LEO patch queue: positions 44-47 are LEO migrations (44-46 managed webhook spool,
+		// 47 provider message receipts) and were
 		// applied in production before upstream's migration 44. schema_info is
 		// positional, so upstream migrations keep their relative order but sit after
 		// the LEO block ("Migration N (upstream M)"). Never reorder this list.
@@ -3711,7 +3780,18 @@ func (r *SQLiteRepository) getMigrations() []string {
 		// Migration 46: Stable due/lease scan used by atomic claims and restart recovery.
 		`CREATE INDEX IF NOT EXISTS idx_managed_webhook_spool_due ON managed_webhook_spool(status, next_attempt_at, lease_until, id)`,
 
-		// Migration 47 (upstream 44): Persist poll option catalogues for encrypted vote resolution
+		// Migration 47 (LEO): Durable positive evidence for exact, device-scoped provider
+		// message reconciliation. This table intentionally has no absence state.
+		`CREATE TABLE IF NOT EXISTS provider_message_receipts (
+			device_id VARCHAR(255) NOT NULL,
+			provider_message_id VARCHAR(64) NOT NULL,
+			observed_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (device_id, provider_message_id)
+		)`,
+
+		// Migration 48 (upstream 44): Persist poll option catalogues for encrypted vote resolution
 		`CREATE TABLE IF NOT EXISTS poll_definitions (
 			device_id VARCHAR(255) NOT NULL DEFAULT '',
 			chat_jid VARCHAR(255) NOT NULL,
@@ -3724,10 +3804,10 @@ func (r *SQLiteRepository) getMigrations() []string {
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (device_id, chat_jid, poll_message_id)
 		)`,
-		// Migration 48 (upstream 45): Anchor on-demand history sync without sorting the whole chat
+		// Migration 49 (upstream 45): Anchor on-demand history sync without sorting the whole chat
 		`CREATE INDEX IF NOT EXISTS idx_messages_chat_device_timestamp ON messages(chat_jid, device_id, timestamp)`,
 
-		// Migration 49 (upstream 46): Durable delayed and recurring message sends
+		// Migration 50 (upstream 46): Durable delayed and recurring message sends
 		`CREATE TABLE IF NOT EXISTS scheduled_sends (
 			id VARCHAR(64) PRIMARY KEY,
 			device_id VARCHAR(255) NOT NULL,
@@ -3756,29 +3836,29 @@ func (r *SQLiteRepository) getMigrations() []string {
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 
-		// Migration 50 (upstream 47): Fetch due schedules without scanning the full queue
+		// Migration 51 (upstream 47): Fetch due schedules without scanning the full queue
 		`CREATE INDEX IF NOT EXISTS idx_scheduled_sends_due ON scheduled_sends(status, next_run_at)`,
 
-		// Migration 51 (upstream 48): Device-scoped schedule listing and cleanup
+		// Migration 52 (upstream 48): Device-scoped schedule listing and cleanup
 		`CREATE INDEX IF NOT EXISTS idx_scheduled_sends_device ON scheduled_sends(device_id, status, next_run_at)`,
 
-		// Migration 52 (upstream 49): Persist reply context for live, sent, and history messages.
+		// Migration 53 (upstream 49): Persist reply context for live, sent, and history messages.
 		`ALTER TABLE messages ADD COLUMN context_metadata TEXT DEFAULT ''`,
 
-		// Migration 53 (upstream 50): Per-device secret for Chatwoot's signed webhooks (each API channel has its own)
+		// Migration 54 (upstream 50): Per-device secret for Chatwoot's signed webhooks (each API channel has its own)
 		`ALTER TABLE chatwoot_device_configs ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`,
 
-		// Migration 54 (upstream 51): Reuse the identity of a scheduled occurrence on retries.
+		// Migration 55 (upstream 51): Reuse the identity of a scheduled occurrence on retries.
 		`ALTER TABLE scheduled_sends ADD COLUMN pending_message_id VARCHAR(255) NOT NULL DEFAULT ''`,
 
-		// Migration 55 (upstream 52): Track attempts made before occurrence IDs were persisted.
+		// Migration 56 (upstream 52): Track attempts made before occurrence IDs were persisted.
 		`ALTER TABLE scheduled_sends ADD COLUMN legacy_attempt_unknown BOOLEAN NOT NULL DEFAULT FALSE`,
 
-		// Migration 56 (upstream 53): An old running or retried occurrence may already have
+		// Migration 57 (upstream 53): An old running or retried occurrence may already have
 		// reached WhatsApp under an unknown ID. It must be skipped, not replayed.
 		`UPDATE scheduled_sends SET legacy_attempt_unknown = TRUE WHERE status = 'running' OR attempts > 0`,
 
-		// Migration 57 (upstream 54): Poll retries must reuse the secret as well as the ID.
+		// Migration 58 (upstream 54): Poll retries must reuse the secret as well as the ID.
 		`ALTER TABLE scheduled_sends ADD COLUMN pending_poll_secret BLOB`,
 	}
 }

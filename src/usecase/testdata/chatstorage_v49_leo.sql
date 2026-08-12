@@ -171,7 +171,7 @@ CREATE INDEX idx_messages_chat_device_timestamp ON messages(chat_jid, device_id,
 CREATE INDEX idx_scheduled_sends_due ON scheduled_sends(status, next_run_at);
 CREATE INDEX idx_scheduled_sends_device ON scheduled_sends(device_id, status, next_run_at);
 DELETE FROM "sqlite_sequence";
--- LEO fork: managed webhook spool (positional migrations 44-46)
+-- LEO fork: managed webhook spool (positional migrations 44-46); upstream v49 = LEO 53
 CREATE TABLE IF NOT EXISTS managed_webhook_spool (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   delivery_id VARCHAR(96) NOT NULL,
@@ -203,5 +203,14 @@ CREATE TABLE IF NOT EXISTS managed_webhook_spool (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_webhook_spool_delivery ON managed_webhook_spool(delivery_id);
 CREATE INDEX IF NOT EXISTS idx_managed_webhook_spool_due ON managed_webhook_spool(status, next_attempt_at, lease_until, id);
-INSERT INTO schema_info (version, updated_at) VALUES (52, '2026-10-24 00:00:00');
+-- LEO fork: provider message receipts (positional migration 47)
+CREATE TABLE IF NOT EXISTS provider_message_receipts (
+  device_id VARCHAR(255) NOT NULL,
+  provider_message_id VARCHAR(64) NOT NULL,
+  observed_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (device_id, provider_message_id)
+);
+INSERT INTO schema_info (version, updated_at) VALUES (53, '2026-10-24 00:00:00');
 COMMIT;
