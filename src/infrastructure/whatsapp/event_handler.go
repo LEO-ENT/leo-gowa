@@ -96,9 +96,9 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 // but dropping them without a trace makes the common "messages from this
 // contact never arrive" report impossible to diagnose.
 func handleUndecryptableMessage(evt *events.UndecryptableMessage) {
-	log.Warnf("Undecryptable message %s from %s (unavailable: %v, type: %q, fail mode: %q). No webhook or storage entry is produced for it.",
+	// LEO PII boundary: never log the sender/chat JIDs (pii_logging_test census).
+	log.Warnf("Undecryptable message %s (unavailable: %v, type: %q, fail mode: %q). No webhook or storage entry is produced for it.",
 		evt.Info.ID,
-		evt.Info.SourceString(),
 		evt.IsUnavailable,
 		evt.UnavailableType,
 		evt.DecryptFailMode,
@@ -354,10 +354,10 @@ func handleReceipt(ctx context.Context, evt *events.Receipt, deviceID string, cl
 	switch evt.Type {
 	case types.ReceiptTypeRead, types.ReceiptTypeReadSelf:
 		sendReceipt = true
-		log.Infof("%v was read by %s at %s: %+v", evt.MessageIDs, evt.SourceString(), evt.Timestamp, evt)
+		log.Infof("whatsapp_receipt.read count=%d", len(evt.MessageIDs))
 	case types.ReceiptTypeDelivered:
 		sendReceipt = true
-		log.Infof("%s was delivered to %s at %s: %+v", evt.MessageIDs[0], evt.SourceString(), evt.Timestamp, evt)
+		log.Infof("whatsapp_receipt.delivered count=%d", len(evt.MessageIDs))
 	}
 
 	// Forward receipt (ack) event to webhook or Chatwoot if configured

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -14,7 +13,6 @@ import (
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/chatwoot"
-	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
 	fiberUtils "github.com/gofiber/utils/v2"
 	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow"
@@ -837,18 +835,7 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 	// (which may be a bare or AD JID) in it; filteredLogger redacts message data.
 	baseLogger := waLog.Stdout("Client", config.WhatsappLogLevel, true)
 	client := whatsmeow.NewClient(storeDevice, newFilteredLogger(baseLogger))
-	if proxyURL := config.WhatsappProxy; proxyURL != "" {
-		if err := client.SetProxyAddress(proxyURL); err != nil {
-			// url.Parse errors include the raw URL, so log only its scheme and host.
-			reason := err.Error()
-			if errors.As(err, new(*url.Error)) {
-				reason = utils.FormatProxyParseFailure(proxyURL)
-			}
-			baseLogger.Errorf("failed to apply WHATSAPP_PROXY for device %s: %s", deviceID, reason)
-		} else {
-			baseLogger.Infof("applied outbound proxy from WHATSAPP_PROXY for device %s", deviceID)
-		}
-	}
+	configureOutboundProxy(client, config.WhatsappProxy, baseLogger)
 	client.EnableAutoReconnect = true
 	client.AutoTrustIdentity = true
 
