@@ -305,20 +305,10 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 	if err != nil {
 		return whatsmeow.SendResponse{}, normalizeSendError(err)
 	}
+	service.recordProviderMessagePresentAfterACK(ctx, ts)
 
 	// Store the sent message using chatstorage
 	senderJID := whatsapp.OwnSenderJID(client)
-
-	// A successful SendMessage return is a server acknowledgement and therefore
-	// durable positive evidence. Persist it before the asynchronous full-message
-	// write; failure cannot turn an already accepted send into a retryable error.
-	if service.chatStorageRepo != nil {
-		evidenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerReceiptStoreTimeout)
-		if err := service.chatStorageRepo.RecordProviderMessagePresent(evidenceCtx, deviceIDFromContext(ctx), ts.ID, ts.Timestamp); err != nil {
-			logrus.Warn("provider_message_receipt.storage_unavailable")
-		}
-		cancel()
-	}
 
 	// Store message asynchronously with timeout.
 	// Preserve device context (for device_id scoping) but detach from request cancellation.
@@ -365,6 +355,19 @@ func normalizeStoredSender(ctx context.Context, sender string) string {
 		return sender
 	}
 	return whatsapp.NormalizeJIDFromLID(ctx, parsed, whatsapp.ClientFromContext(ctx)).ToNonAD().String()
+}
+
+// recordProviderMessagePresentAfterACK is deliberately called only after
+// doSendMessage returns without an error. A timeout, cancellation, or transport
+// error is ambiguous and must never create positive evidence.
+func (service serviceSend) recordProviderMessagePresentAfterACK(ctx context.Context, response whatsmeow.SendResponse) {
+	if service.chatStorageRepo != nil {
+		evidenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerReceiptStoreTimeout)
+		if err := service.chatStorageRepo.RecordProviderMessagePresent(evidenceCtx, deviceIDFromContext(ctx), response.ID, response.Timestamp); err != nil {
+			logrus.Warn("provider_message_receipt.storage_unavailable")
+		}
+		cancel()
+	}
 }
 
 func (service serviceSend) mergeReplyContext(ctx context.Context, contextInfo *waE2E.ContextInfo, replyMessageID *string) *waE2E.ContextInfo {
