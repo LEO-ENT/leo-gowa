@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
-	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -92,7 +91,7 @@ func createReceiptPayload(ctx context.Context, evt *events.Receipt, deviceID str
 // per-device rules.
 func forwardReceiptToWebhook(ctx context.Context, evt *events.Receipt, deviceID string, client *whatsmeow.Client) error {
 	if !shouldForwardReceipt(evt) {
-		logrus.Debugf("Skipping %s receipt webhook from linked device %d of %s", evt.Type, evt.Sender.Device, evt.Sender.ToNonAD())
+		logReceiptLinkedDeviceSkipped()
 		return nil
 	}
 

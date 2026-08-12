@@ -29,13 +29,6 @@ var (
 	errManagedWebhookAdmissionFailed  = errors.New("managed webhook durable admission failed")
 )
 
-const (
-	chatwootReceiptLookupFailedEvent         = "chatwoot_receipt.lookup_failed"
-	chatwootReceiptMissingSourceEvent        = "chatwoot_receipt.missing_source"
-	chatwootReceiptUpdateLastSeenFailedEvent = "chatwoot_receipt.update_last_seen_failed"
-	chatwootReceiptMarkReadFailedEvent       = "chatwoot_receipt.mark_read_failed"
-)
-
 var (
 	submitWebhookFn = submitWebhook
 	// getChatwootClientFn resolves the per-device Chatwoot destination for the
@@ -1592,18 +1585,18 @@ func syncReadReceiptsToChatwoot(cw *chatwoot.Client, deviceID string, linkRepo d
 		return
 	}
 	if deviceID == "" || linkRepo == nil {
-		logrus.Warn("Chatwoot: Cannot sync read receipt without message-link storage")
+		logReceiptStorageUnavailable()
 		return
 	}
 	if chatwootPayloadExcluded(data) {
-		logrus.Debugf("Chatwoot: skipping read receipt for excluded chat")
+		logChatwootReceiptExcludedChat()
 		return
 	}
 
 	for _, messageID := range extractReceiptMessageIDs(data) {
 		link, err := linkRepo.GetChatwootMessageLinkByWhatsAppID(deviceID, messageID)
 		if err != nil {
-			logrus.Error(chatwootReceiptLookupFailedEvent)
+			logChatwootReceiptLookupFailed()
 			continue
 		}
 		if link == nil || link.ChatwootConversationID == 0 {
@@ -1616,7 +1609,7 @@ func syncReadReceiptsToChatwoot(cw *chatwoot.Client, deviceID string, linkRepo d
 			continue
 		}
 		if chatwootJIDExcluded(link.WhatsAppChatJID) {
-			logrus.Debugf("Chatwoot: skipping read receipt for excluded chat %s", link.WhatsAppChatJID)
+			logChatwootReceiptExcludedChat()
 			continue
 		}
 
@@ -1625,16 +1618,16 @@ func syncReadReceiptsToChatwoot(cw *chatwoot.Client, deviceID string, linkRepo d
 			sourceID = link.WhatsAppChatJID
 		}
 		if sourceID == "" {
-			logrus.Debug(chatwootReceiptMissingSourceEvent)
+			logChatwootReceiptMissingSource()
 			continue
 		}
 		if err := cw.UpdateLastSeen(link.ChatwootConversationID, sourceID); err != nil {
-			logrus.Error(chatwootReceiptUpdateLastSeenFailedEvent)
+			logChatwootReceiptUpdateLastSeenFailed()
 			continue
 		}
 		link.IsRead = true
 		if err := linkRepo.UpsertChatwootMessageLink(link); err != nil {
-			logrus.Error(chatwootReceiptMarkReadFailedEvent)
+			logChatwootReceiptMarkReadFailed()
 		}
 	}
 }
