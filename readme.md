@@ -694,6 +694,7 @@ You may also fork or modify the source code.
 ### HTTP REST API
 
 - Check [docs/openapi.yaml](./docs/openapi.yaml) for detailed API specifications.
+- See [Deterministic outbound text IDs](./docs/deterministic-outbound-text.md) for the bounded retry contract and rollout limitations.
 - Use [Swagger Editor](https://editor.swagger.io) to visualize the API.
 - Generate HTTP clients using [openapi-generator](https://openapi-generator.tech/#try).
 
