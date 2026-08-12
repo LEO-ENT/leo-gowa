@@ -108,6 +108,8 @@ release notes and `GET /app/info` when using a pinned binary or container tag.
 ## Features
 
 - Send WhatsApp messages through the HTTP API. See [docs/openapi.yaml](./docs/openapi.yaml) for details.
+- LEO: reconcile deterministic outbound text IDs without blind retries via the authenticated,
+  device-scoped [provider message lookup](./docs/provider-message-reconciliation.md).
 - **MCP (Model Context Protocol) server support** — Integrate with AI agents and tools using a standardized protocol.
 - **Optional MCP OAuth 2.1** — Connect remote MCP clients that cannot supply a Basic Auth header. See
   [MCP OAuth](./docs/mcp-oauth.md).
