@@ -210,12 +210,6 @@ func restServer(_ *cobra.Command, _ []string) {
 		})
 	}
 
-	// Provider reconciliation is security-sensitive and therefore has an
-	// independent fail-closed boundary. With no configured accounts, its auth
-	// middleware denies every request; it never inherits the optional public API
-	// posture and never invents a fallback credential.
-	registerProviderLookupRoutes(apiGroup, accounts, dm, providerUsecase)
-
 	// Chatwoot sync + per-device config routes - require authentication (the
 	// webhooks are registered earlier without auth). Registered before
 	// headerDeviceGroup so they are not intercepted by DeviceMiddleware.
@@ -239,8 +233,15 @@ func restServer(_ *cobra.Command, _ []string) {
 	// registration on apiGroup: Group("") registers a root "use" route that
 	// matches every path, so DeviceMiddleware would also run for anything
 	// mounted after it. TestDeviceGroupIsRegisteredLast pins the order.
-	headerDeviceGroup := apiGroup.Group("", middleware.DeviceMiddleware(dm))
-	registerDeviceScopedRoutes(headerDeviceGroup)
+	// LEO: the path-scoped provider lookup boundary is registered together with,
+	// and before, the device-scoped group so its opaque errors cannot be pre-empted.
+	registerProviderAndDeviceScopedRoutes(
+		apiGroup,
+		accounts,
+		dm,
+		providerUsecase,
+		registerDeviceScopedRoutes,
+	)
 
 	go websocket.RunHub()
 
@@ -383,11 +384,30 @@ func providerLookupAuthMiddleware(accounts map[string]string) fiber.Handler {
 	return newBasicAuthMiddleware(accounts)
 }
 
+func registerProviderAndDeviceScopedRoutes(
+	apiGroup fiber.Router,
+	accounts map[string]string,
+	dm *whatsapp.DeviceManager,
+	service domainProvider.IMessageLookupUsecase,
+	registerDeviceScopedRoutes func(fiber.Router),
+) {
+	// Fiber evaluates one flat route stack in registration order. Register the
+	// concrete provider boundary before the root-scoped compatibility routes so
+	// their reflective device error can never pre-empt the opaque boundary.
+	registerProviderLookupRoutes(apiGroup, accounts, dm, service)
+
+	headerDeviceGroup := apiGroup.Group("", middleware.DeviceMiddleware(dm))
+	registerDeviceScopedRoutes(headerDeviceGroup)
+}
+
 func registerProviderLookupRoutes(apiGroup fiber.Router, accounts map[string]string, dm *whatsapp.DeviceManager, service domainProvider.IMessageLookupUsecase) {
-	providerAuthorizedDeviceGroup := apiGroup.Group(
-		"",
+	// Keep fail-closed provider authentication path-scoped. A root-scoped Use
+	// would deny the dashboard and any route registered after this boundary when
+	// the supported no-credentials deployment mode is active.
+	apiGroup.Use(
+		rest.ProviderLookupPath,
 		providerLookupAuthMiddleware(accounts),
 		middleware.OpaqueDeviceMiddleware(dm),
 	)
-	rest.InitRestProvider(providerAuthorizedDeviceGroup, service)
+	rest.InitRestProvider(apiGroup, service)
 }

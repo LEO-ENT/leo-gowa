@@ -61,6 +61,13 @@ func TestDeviceGroupIsRegisteredLast(t *testing.T) {
 			}
 			return true
 		}
+		// LEO patch queue: registerProviderAndDeviceScopedRoutes registers the
+		// path-scoped provider boundary and then the device group as its last
+		// statement, so the call itself is the device-group position.
+		if callName(call) == "registerProviderAndDeviceScopedRoutes" {
+			groupPos = call.Pos()
+			return true
+		}
 		// f(apiGroup, ...) — InitRest*, uimcp.Register, registerUIRoute
 		for _, arg := range call.Args {
 			if isAPIGroup(arg) {
