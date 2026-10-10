@@ -41,8 +41,8 @@ type webhookContactPayload struct {
 }
 
 // forwardMessageToWebhook is a helper function to forward message event to webhook url
-func forwardMessageToWebhook(ctx context.Context, client *whatsmeow.Client, evt *events.Message) error {
-	webhookEvent, err := createWebhookEvent(ctx, client, evt)
+func forwardMessageToWebhook(ctx context.Context, client *whatsmeow.Client, evt *events.Message, preparedPoll ...*webhookPollPayload) error {
+	webhookEvent, err := createWebhookEvent(ctx, client, evt, preparedPoll...)
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func isReactionMessage(evt *events.Message) bool {
 	return utils.UnwrapMessage(evt.Message).GetReactionMessage() != nil
 }
 
-func createWebhookEvent(ctx context.Context, client *whatsmeow.Client, evt *events.Message) (*WebhookEvent, error) {
+func createWebhookEvent(ctx context.Context, client *whatsmeow.Client, evt *events.Message, preparedPoll ...*webhookPollPayload) (*WebhookEvent, error) {
 	webhookEvent := &WebhookEvent{
 		Event:   EventTypeMessage,
 		Payload: make(map[string]any),
@@ -77,7 +77,7 @@ func createWebhookEvent(ctx context.Context, client *whatsmeow.Client, evt *even
 	}
 
 	// Determine event type and build payload
-	eventType, payload, err := buildEventPayload(ctx, client, evt)
+	eventType, payload, err := buildEventPayload(ctx, client, evt, preparedPoll...)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func createWebhookEvent(ctx context.Context, client *whatsmeow.Client, evt *even
 	return webhookEvent, nil
 }
 
-func buildEventPayload(ctx context.Context, client *whatsmeow.Client, evt *events.Message) (string, map[string]any, error) {
+func buildEventPayload(ctx context.Context, client *whatsmeow.Client, evt *events.Message, preparedPoll ...*webhookPollPayload) (string, map[string]any, error) {
 	payload := make(map[string]any)
 
 	msg := utils.UnwrapMessage(evt.Message)
@@ -168,6 +168,13 @@ func buildEventPayload(ctx context.Context, client *whatsmeow.Client, evt *event
 	// Add optional fields
 	if err := buildOptionalFields(ctx, client, evt, msg, payload); err != nil {
 		return "", nil, err
+	}
+
+	if len(preparedPoll) > 0 && preparedPoll[0] != nil {
+		payload["poll"] = preparedPoll[0]
+		if _, hasBody := payload["body"]; !hasBody {
+			payload["body"] = pollWebhookBody(preparedPoll[0])
+		}
 	}
 
 	return EventTypeMessage, payload, nil
