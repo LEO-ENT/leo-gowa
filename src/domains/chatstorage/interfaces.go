@@ -42,6 +42,12 @@ type IChatStorageRepository interface {
 	// local miss is UNKNOWN, never proof of provider absence.
 	LookupProviderMessage(ctx context.Context, deviceID, providerMessageID string) (domainProvider.MessageLookup, error)
 
+	// Poll definition operations
+	UpsertPollDefinition(definition *PollDefinition) error
+	GetPollDefinition(deviceID, chatJID, pollMessageID string) (*PollDefinition, error)
+	GetPollDefinitionByIDAndDevice(deviceID, pollMessageID string) (*PollDefinition, error)
+	AppendPollOption(deviceID, chatJID, pollMessageID string, option PollOption) error
+
 	// Chatwoot correlation operations
 	UpsertChatwootMessageLink(link *ChatwootMessageLink) error
 	GetChatwootMessageLinkByWhatsAppID(deviceID, waMessageID string) (*ChatwootMessageLink, error)

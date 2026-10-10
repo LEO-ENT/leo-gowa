@@ -31,13 +31,14 @@ func handleMessage(ctx context.Context, evt *events.Message, chatStorageRepo dom
 	// edit-handling paths unchanged. No-op when the envelope is absent or when
 	// decryption fails.
 	evt = materializeSecretEditMessage(ctx, evt, client)
+	pollPayload := preparePollWebhookPayload(ctx, client, chatStorageRepo, evt)
 
 	if isReactionMessage(evt) {
 		if err := chatStorageRepo.CreateReaction(ctx, evt); err != nil {
 			log.Errorf("Failed to store incoming reaction %s: %v", evt.Info.ID, err)
 		}
 
-		handleWebhookForward(ctx, evt, client)
+		handleWebhookForward(ctx, evt, client, pollPayload)
 		return
 	}
 
@@ -56,7 +57,7 @@ func handleMessage(ctx context.Context, evt *events.Message, chatStorageRepo dom
 	handleAutoReply(ctx, evt, chatStorageRepo, client)
 
 	// Forward to webhook if configured
-	handleWebhookForward(ctx, evt, client)
+	handleWebhookForward(ctx, evt, client, pollPayload)
 }
 
 func buildMessageMetaParts(evt *events.Message) []string {
@@ -147,7 +148,7 @@ func materializeSecretEditMessage(ctx context.Context, evt *events.Message, clie
 	return &cloned
 }
 
-func handleWebhookForward(ctx context.Context, evt *events.Message, client *whatsmeow.Client) {
+func handleWebhookForward(ctx context.Context, evt *events.Message, client *whatsmeow.Client, preparedPoll ...*webhookPollPayload) {
 	// Skip webhook for protocol messages that are internal sync messages
 	if protocolMessage := evt.Message.GetProtocolMessage(); protocolMessage != nil {
 		protocolType := protocolMessage.GetType().String()
@@ -171,8 +172,14 @@ func handleWebhookForward(ctx context.Context, evt *events.Message, client *what
 	}
 
 	// Managed delivery commits before any goroutine/network; legacy delivery
-	// keeps the historical asynchronous behavior.
+	// keeps the historical asynchronous behavior. The poll payload is prepared
+	// synchronously by the caller (definition persistence + vote decryption)
+	// and only captured here.
+	var pollPayload *webhookPollPayload
+	if len(preparedPoll) > 0 {
+		pollPayload = preparedPoll[0]
+	}
 	dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
-		return forwardMessageToWebhook(webhookCtx, client, evt)
+		return forwardMessageToWebhook(webhookCtx, client, evt, pollPayload)
 	})
 }
