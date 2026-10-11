@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -895,6 +896,11 @@ func (r *SQLiteRepository) DeleteMessageByDevice(deviceID, id, chatJID string) e
 // UpsertPollDefinition stores the ordered poll option catalogue used to map
 // decrypted vote hashes back to human-readable names.
 func (r *SQLiteRepository) UpsertPollDefinition(definition *domainChatStorage.PollDefinition) error {
+	return r.UpsertPollDefinitionContext(context.Background(), definition)
+}
+
+// UpsertPollDefinitionContext allows bounded cancellation of SQLite contention.
+func (r *SQLiteRepository) UpsertPollDefinitionContext(ctx context.Context, definition *domainChatStorage.PollDefinition) error {
 	if definition == nil {
 		return fmt.Errorf("poll definition is required")
 	}
@@ -914,7 +920,7 @@ func (r *SQLiteRepository) UpsertPollDefinition(definition *domainChatStorage.Po
 		definition.CreatedAt = definition.UpdatedAt
 	}
 
-	_, err = r.db.Exec(`
+	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO poll_definitions (
 			device_id, chat_jid, poll_message_id, question, options_json,
 			selectable_option_count, version, created_at, updated_at
@@ -988,6 +994,57 @@ func (r *SQLiteRepository) GetPollDefinitionByIDAndDevice(deviceID, pollMessageI
 		}
 		if err := json.Unmarshal([]byte(optionsJSON), &definition.Options); err != nil {
 			return nil, fmt.Errorf("failed to decode poll options for %s: %w", pollMessageID, err)
+		}
+		match = definition
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return match, nil
+}
+
+// GetPollDefinitionForRegisteredCreator retrieves only public poll metadata from
+// a registered sibling account for an exact group/poll identity. The caller must
+// establish the creator identity from the authenticated poll vote event. Device
+// identities here are storage JIDs, never user-facing registry slot aliases.
+func (r *SQLiteRepository) GetPollDefinitionForRegisteredCreator(receiverDeviceID, creatorDeviceID, chatJID, pollMessageID string) (*domainChatStorage.PollDefinition, error) {
+	if strings.TrimSpace(receiverDeviceID) == "" || strings.TrimSpace(creatorDeviceID) == "" || strings.TrimSpace(pollMessageID) == "" || !strings.HasSuffix(chatJID, "@g.us") {
+		return nil, nil
+	}
+	// All registration checks and metadata reads share one SQLite statement snapshot.
+	// EXISTS avoids duplicate rows when companion slots share the same storage JID.
+	rows, err := r.db.Query(`
+  SELECT p.device_id, p.chat_jid, p.poll_message_id, p.question, p.options_json,
+         p.selectable_option_count, p.version, p.created_at, p.updated_at
+  FROM poll_definitions p
+  WHERE p.chat_jid = ? AND p.poll_message_id = ? AND p.device_id <> ?
+    AND EXISTS (SELECT 1 FROM devices WHERE jid = ? AND jid <> '')
+    AND EXISTS (SELECT 1 FROM devices WHERE jid = ? AND jid <> '')
+    AND EXISTS (SELECT 1 FROM devices WHERE jid = p.device_id AND jid <> '')
+  ORDER BY p.device_id
+ `, chatJID, pollMessageID, receiverDeviceID, receiverDeviceID, creatorDeviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var match *domainChatStorage.PollDefinition
+	for rows.Next() {
+		definition := &domainChatStorage.PollDefinition{}
+		var optionsJSON string
+		if err := rows.Scan(&definition.DeviceID, &definition.ChatJID, &definition.PollMessageID, &definition.Question, &optionsJSON,
+			&definition.SelectableOptionCount, &definition.Version, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(optionsJSON), &definition.Options); err != nil {
+			return nil, fmt.Errorf("registered sibling poll metadata is invalid")
+		}
+		if match != nil {
+			if match.Question != definition.Question || match.SelectableOptionCount != definition.SelectableOptionCount || match.Version != definition.Version || !reflect.DeepEqual(match.Options, definition.Options) {
+				return nil, fmt.Errorf("registered sibling poll metadata is ambiguous")
+			}
+			if !definition.UpdatedAt.After(match.UpdatedAt) {
+				continue
+			}
 		}
 		match = definition
 	}

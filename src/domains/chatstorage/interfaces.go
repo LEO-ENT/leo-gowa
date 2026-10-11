@@ -51,6 +51,8 @@ type IChatStorageRepository interface {
 	UpsertPollDefinition(definition *PollDefinition) error
 	GetPollDefinition(deviceID, chatJID, pollMessageID string) (*PollDefinition, error)
 	GetPollDefinitionByIDAndDevice(deviceID, pollMessageID string) (*PollDefinition, error)
+	// Explicit group-only fallback for metadata belonging to registered sibling accounts.
+	GetPollDefinitionForRegisteredCreator(receiverDeviceID, creatorDeviceID, chatJID, pollMessageID string) (*PollDefinition, error)
 	AppendPollOption(deviceID, chatJID, pollMessageID string, option PollOption) error
 
 	// Chatwoot correlation operations

@@ -11,6 +11,7 @@ import (
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
 	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -28,6 +29,12 @@ type pollDefinitionStore interface {
 	GetPollDefinition(deviceID, chatJID, pollMessageID string) (*domainChatStorage.PollDefinition, error)
 	GetPollDefinitionByIDAndDevice(deviceID, pollMessageID string) (*domainChatStorage.PollDefinition, error)
 	AppendPollOption(deviceID, chatJID, pollMessageID string, option domainChatStorage.PollOption) error
+}
+
+// Cross-device access is an explicit metadata-only capability. The repository
+// verifies receiver, creator and donor registrations in this instance's DB.
+type registeredPollDefinitionStore interface {
+	GetPollDefinitionForRegisteredCreator(receiverDeviceID, creatorDeviceID, chatJID, pollMessageID string) (*domainChatStorage.PollDefinition, error)
 }
 
 type webhookPollOptionPayload struct {
@@ -180,6 +187,42 @@ func loadPollDefinition(store pollDefinitionStore, deviceID, pollID string, chat
 	return definition
 }
 
+// Called only after successful vote authentication. Mirror whatsmeow's
+// getOrigSenderFromKey: FromMe is relative to the voter, not the receiver.
+// A group key otherwise identifies the poll creator by Participant. Never
+// change the event or borrow a different device's WhatsApp message secret.
+func loadRegisteredPollDefinition(ctx context.Context, client *whatsmeow.Client, store pollDefinitionStore, evt *events.Message, key *waCommon.MessageKey) *domainChatStorage.PollDefinition {
+	registeredStore, ok := store.(registeredPollDefinitionStore)
+	if !ok || evt == nil || key == nil || evt.Info.Chat.Server != types.GroupServer || key.GetID() == "" {
+		return nil
+	}
+	creator := evt.Info.Sender
+	if !key.GetFromMe() {
+		var err error
+		creator, err = types.ParseJID(key.GetParticipant())
+		if err != nil {
+			logrus.Warn("Poll definition fallback rejected: invalid creator")
+			return nil
+		}
+	}
+	if creator.IsEmpty() || (creator.Server != types.DefaultUserServer && creator.Server != types.HiddenUserServer) {
+		logrus.Warn("Poll definition fallback rejected: missing creator")
+		return nil
+	}
+	creator = NormalizeJIDFromLID(ctx, creator, client).ToNonAD()
+	definition, err := registeredStore.GetPollDefinitionForRegisteredCreator(
+		pollDeviceID(ctx, client), creator.String(), evt.Info.Chat.ToNonAD().String(), key.GetID(),
+	)
+	if err != nil {
+		logrus.Warn("Poll definition fallback unavailable or ambiguous")
+		return nil
+	}
+	if definition != nil {
+		logrus.Warn("Poll definition recovered from a registered device in this instance")
+	}
+	return definition
+}
+
 func resolvePollSelections(definition *domainChatStorage.PollDefinition, selected [][]byte) (names, hashes []string, status string) {
 	names = make([]string, 0, len(selected))
 	hashes = make([]string, 0, len(selected))
@@ -252,6 +295,13 @@ func preparePollWebhookPayload(ctx context.Context, client *whatsmeow.Client, st
 			logrus.Warn("Failed to decrypt poll vote")
 			payload.ResolutionStatus = pollResolutionDecryptFailed
 			return payload
+		}
+		if definition == nil {
+			definition = loadRegisteredPollDefinition(ctx, client, store, evt, update.GetPollCreationMessageKey())
+			if definition != nil {
+				payload = webhookPollFromDefinition("vote", definition)
+				payload.PollID = pollID
+			}
 		}
 		names, hashes, status := resolvePollSelections(definition, vote.GetSelectedOptions())
 		payload.SelectedOptions = &names

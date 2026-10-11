@@ -24,6 +24,7 @@ import (
 	domainSend "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/send"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
 	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
+	pkgSQLite "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/sqlite"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/ui/rest/helpers"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/validations"
@@ -1608,7 +1609,7 @@ func (service serviceSend) SendPoll(ctx context.Context, request domainSend.Poll
 	if err := service.persistSentPollDefinition(ctx, dataWaRecipient, ts.ID, request, ts.Timestamp); err != nil {
 		// The WhatsApp send already succeeded. Keep the API response successful
 		// while making the loss of future vote resolution visible in logs.
-		logrus.Warnf("Failed to persist sent poll definition %s: %v", ts.ID, err)
+		logrus.Warn("poll_definition.sent_persistence_failed")
 	}
 	response.Status = fmt.Sprintf("Send poll success %s (server timestamp: %s)", request.BaseRequest.Phone, ts.Timestamp.String())
 	return response, nil
@@ -1643,7 +1644,55 @@ func (service serviceSend) persistSentPollDefinition(ctx context.Context, recipi
 	if len(sentAt) > 0 {
 		definition.UpdatedAt = sentAt[0]
 	}
-	return service.chatStorageRepo.UpsertPollDefinition(definition)
+	if definition.UpdatedAt.IsZero() {
+		definition.UpdatedAt = time.Now()
+	}
+	definition.CreatedAt = definition.UpdatedAt
+	// The provider already acknowledged this poll: HTTP cancellation must not
+	// discard its catalogue, and a storage retry must never resend WhatsApp.
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sentPollPersistenceTimeout)
+	defer cancel()
+	return retrySentPollDefinition(persistCtx, service.chatStorageRepo, definition)
+}
+
+const (
+	sentPollPersistenceTimeout  = 10 * time.Second
+	sentPollPersistenceAttempts = 8
+)
+
+type pollDefinitionContextWriter interface {
+	UpsertPollDefinitionContext(context.Context, *domainChatStorage.PollDefinition) error
+}
+
+func retrySentPollDefinition(ctx context.Context, repo domainChatStorage.IChatStorageRepository, definition *domainChatStorage.PollDefinition) error {
+	delay := 50 * time.Millisecond
+	for attempt := 0; attempt < sentPollPersistenceAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		if writer, ok := repo.(pollDefinitionContextWriter); ok {
+			err = writer.UpsertPollDefinitionContext(ctx, definition)
+		} else {
+			err = repo.UpsertPollDefinition(definition)
+		}
+		if err == nil || !pkgSQLite.IsBusy(err) {
+			return err
+		}
+		if attempt == sentPollPersistenceAttempts-1 {
+			return err
+		}
+		logrus.Warn("poll_definition.sent_persistence_busy_retry")
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(delay*2, 800*time.Millisecond)
+	}
+	return ctx.Err()
 }
 
 func (service serviceSend) SendPresence(ctx context.Context, request domainSend.PresenceRequest) (response domainSend.GenericResponse, err error) {

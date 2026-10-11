@@ -309,6 +309,26 @@ func (r *deviceChatStorage) UpsertPollDefinition(definition *domainChatStorage.P
 	return r.base.UpsertPollDefinition(definition)
 }
 
+// UpsertPollDefinitionContext preserves cancellation when supported by storage.
+func (r *deviceChatStorage) UpsertPollDefinitionContext(ctx context.Context, definition *domainChatStorage.PollDefinition) error {
+	if contextual, ok := r.base.(interface {
+		UpsertPollDefinitionContext(context.Context, *domainChatStorage.PollDefinition) error
+	}); ok {
+		if definition == nil {
+			return contextual.UpsertPollDefinitionContext(ctx, nil)
+		}
+		scoped := *definition
+		if scoped.DeviceID == "" {
+			scoped.DeviceID = r.deviceID
+		}
+		return contextual.UpsertPollDefinitionContext(ctx, &scoped)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.UpsertPollDefinition(definition)
+}
+
 func (r *deviceChatStorage) GetPollDefinition(deviceID, chatJID, pollMessageID string) (*domainChatStorage.PollDefinition, error) {
 	targetDeviceID := deviceID
 	if targetDeviceID == "" {
@@ -323,6 +343,12 @@ func (r *deviceChatStorage) GetPollDefinitionByIDAndDevice(deviceID, pollMessage
 		targetDeviceID = r.deviceID
 	}
 	return r.base.GetPollDefinitionByIDAndDevice(targetDeviceID, pollMessageID)
+}
+
+// GetPollDefinitionForRegisteredCreator requires explicit storage identities;
+// it never fills missing arguments from the wrapper's device or changes scope.
+func (r *deviceChatStorage) GetPollDefinitionForRegisteredCreator(receiverDeviceID, creatorDeviceID, chatJID, pollMessageID string) (*domainChatStorage.PollDefinition, error) {
+	return r.base.GetPollDefinitionForRegisteredCreator(receiverDeviceID, creatorDeviceID, chatJID, pollMessageID)
 }
 
 func (r *deviceChatStorage) AppendPollOption(deviceID, chatJID, pollMessageID string, option domainChatStorage.PollOption) error {
