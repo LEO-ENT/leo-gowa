@@ -82,11 +82,22 @@ func TestPersistSentPollDefinitionRetriesTransientBusy(t *testing.T) {
 
 func TestPersistSentPollDefinitionStopsAfterExhaustionOrNonBusy(t *testing.T) {
 	t.Run("busy exhausted", func(t *testing.T) {
+		var logs bytes.Buffer
+		previousOutput := logrus.StandardLogger().Out
+		logrus.SetOutput(&logs)
+		defer logrus.SetOutput(previousOutput)
 		repo := &sentPollRetryRepo{busyCalls: sentPollPersistenceAttempts}
 		service, ctx, recipient, request := sentPollRetryFixture(repo)
 		err := service.persistSentPollDefinition(ctx, recipient, "POLL-EXHAUSTED", request)
 		require.True(t, pkgSQLite.IsBusy(err))
 		require.Equal(t, sentPollPersistenceAttempts, repo.calls)
+		require.Contains(t, logs.String(), "poll_definition.sent_persistence_failed")
+		require.Contains(t, logs.String(), "attempts=8")
+		require.Contains(t, logs.String(), "failure=sqlite_busy")
+		require.NotContains(t, logs.String(), "private-backend-error")
+		require.NotContains(t, logs.String(), recipient.String())
+		require.NotContains(t, logs.String(), "1234567890")
+		require.NotContains(t, logs.String(), "POLL-EXHAUSTED")
 	})
 	t.Run("nonbusy immediate", func(t *testing.T) {
 		failure := errors.New("storage unavailable")

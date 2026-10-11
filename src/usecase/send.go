@@ -1609,7 +1609,7 @@ func (service serviceSend) SendPoll(ctx context.Context, request domainSend.Poll
 	if err := service.persistSentPollDefinition(ctx, dataWaRecipient, ts.ID, request, ts.Timestamp); err != nil {
 		// The WhatsApp send already succeeded. Keep the API response successful
 		// while making the loss of future vote resolution visible in logs.
-		logrus.Warn("poll_definition.sent_persistence_failed")
+		logrus.WithField("operation", "persist_sent_poll_definition").Warn("poll_definition.sent_persistence_failed")
 	}
 	response.Status = fmt.Sprintf("Send poll success %s (server timestamp: %s)", request.BaseRequest.Phone, ts.Timestamp.String())
 	return response, nil
@@ -1664,13 +1664,26 @@ type pollDefinitionContextWriter interface {
 	UpsertPollDefinitionContext(context.Context, *domainChatStorage.PollDefinition) error
 }
 
-func retrySentPollDefinition(ctx context.Context, repo domainChatStorage.IChatStorageRepository, definition *domainChatStorage.PollDefinition) error {
+func retrySentPollDefinition(ctx context.Context, repo domainChatStorage.IChatStorageRepository, definition *domainChatStorage.PollDefinition) (result error) {
+	attempts := 0
+	defer func() {
+		if result != nil {
+			failure := "storage_error"
+			if pkgSQLite.IsBusy(result) {
+				failure = "sqlite_busy"
+			} else if ctx.Err() != nil {
+				failure = "context_expired"
+			}
+			logrus.WithFields(logrus.Fields{"operation": "persist_sent_poll_definition", "attempts": attempts, "failure": failure}).Warn("poll_definition.sent_persistence_failed")
+		}
+	}()
 	delay := 50 * time.Millisecond
 	for attempt := 0; attempt < sentPollPersistenceAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		var err error
+		attempts++
 		if writer, ok := repo.(pollDefinitionContextWriter); ok {
 			err = writer.UpsertPollDefinitionContext(ctx, definition)
 		} else {
@@ -1682,7 +1695,7 @@ func retrySentPollDefinition(ctx context.Context, repo domainChatStorage.IChatSt
 		if attempt == sentPollPersistenceAttempts-1 {
 			return err
 		}
-		logrus.Warn("poll_definition.sent_persistence_busy_retry")
+		logrus.WithFields(logrus.Fields{"attempt": attempts, "max_attempts": sentPollPersistenceAttempts}).Warn("poll_definition.sent_persistence_busy_retry")
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

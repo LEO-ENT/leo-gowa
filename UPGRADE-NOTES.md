@@ -94,3 +94,7 @@ e360892 address review: scope sender lookup to chat + structured logging (#772)
 ## Verifica
 
 Esiti definitivi, commit e PR sono riportati in `../CODEX-REPORT.md`. I test locali usano dati sintetici e database temporanei, senza sessioni WhatsApp reali.
+
+### Verifica aggiuntiva del punto 5
+
+Il warning finale di persistenza contiene campi strutturati `operation`, `attempts` e `failure` (categoria sicura, senza errore backend/JID). Il test di esaurimento verifica otto tentativi e assenza di identificatori. Il test `TestRegisteredCreatorPollFallback/creator_receives_donor_copy` passa con il fallback; una prova tramite overlay Go che disabilita soltanto il fallback fallisce con `definition_missing` invece di `resolved`. La prova non modifica i sorgenti del branch.
