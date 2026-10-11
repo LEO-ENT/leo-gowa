@@ -52,6 +52,8 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 		handleStreamReplaced(ctx)
 	case *events.Message:
 		handleMessage(ctx, evt, chatStorageRepo, client)
+	case *events.UndecryptableMessage:
+		handleUndecryptableMessage(evt)
 	case *events.Receipt:
 		handleReceipt(ctx, evt, instance.JID(), client, chatStorageRepo)
 	case *events.Archive:
@@ -81,6 +83,14 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 	}
 
 	instance.UpdateStateFromClient()
+}
+
+// handleUndecryptableMessage surfaces messages that arrived but could not be
+// decrypted. They carry no plaintext, so there is nothing to store or forward,
+// but dropping them without a trace makes the common "messages from this
+// contact never arrive" report impossible to diagnose.
+func handleUndecryptableMessage(evt *events.UndecryptableMessage) {
+	log.Warnf("Undecryptable message discarded before webhook and storage (unavailable: %v, type: %q, fail mode: %q)", evt.IsUnavailable, evt.UnavailableType, evt.DecryptFailMode)
 }
 
 func handleDeleteForMe(ctx context.Context, evt *events.DeleteForMe, chatStorageRepo domainChatStorage.IChatStorageRepository, deviceID string, client *whatsmeow.Client) {

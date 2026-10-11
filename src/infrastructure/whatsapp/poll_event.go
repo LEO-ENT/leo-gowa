@@ -165,7 +165,7 @@ func loadPollDefinition(store pollDefinitionStore, deviceID, pollID string, chat
 		seen[chatID] = struct{}{}
 		definition, err := store.GetPollDefinition(deviceID, chatID, pollID)
 		if err != nil {
-			logrus.Warnf("Failed to load poll definition %s for one candidate chat: %v", pollID, err)
+			logrus.Warn("Failed to load poll definition")
 			continue
 		}
 		if definition != nil {
@@ -174,7 +174,7 @@ func loadPollDefinition(store pollDefinitionStore, deviceID, pollID string, chat
 	}
 	definition, err := store.GetPollDefinitionByIDAndDevice(deviceID, pollID)
 	if err != nil {
-		logrus.Warnf("Failed to resolve poll definition %s by device-scoped message ID: %v", pollID, err)
+		logrus.Warn("Failed to resolve poll definition")
 		return nil
 	}
 	return definition
@@ -230,7 +230,7 @@ func preparePollWebhookPayload(ctx context.Context, client *whatsmeow.Client, st
 		definition := pollDefinitionFromCreation(deviceID, chatJID, evt.Info.ID, version, poll, evt.Info.Timestamp)
 		if store != nil && definition.DeviceID != "" && definition.ChatJID != "" {
 			if err := store.UpsertPollDefinition(definition); err != nil {
-				logrus.Warnf("Failed to persist poll definition %s: %v", evt.Info.ID, err)
+				logrus.Warn("Failed to persist poll definition")
 			}
 		}
 		return webhookPollFromDefinition("creation", definition)
@@ -243,12 +243,13 @@ func preparePollWebhookPayload(ctx context.Context, client *whatsmeow.Client, st
 		payload := webhookPollFromDefinition("vote", definition)
 		payload.PollID = pollID
 		if client == nil {
+			logrus.Warn("Poll vote decryption unavailable: missing client")
 			payload.ResolutionStatus = pollResolutionDecryptFailed
 			return payload
 		}
 		vote, err := client.DecryptPollVote(ctx, evt)
 		if err != nil {
-			logrus.Warnf("Failed to decrypt poll vote %s for poll %s: %v", evt.Info.ID, pollID, err)
+			logrus.Warn("Failed to decrypt poll vote")
 			payload.ResolutionStatus = pollResolutionDecryptFailed
 			return payload
 		}
@@ -256,6 +257,9 @@ func preparePollWebhookPayload(ctx context.Context, client *whatsmeow.Client, st
 		payload.SelectedOptions = &names
 		payload.SelectedOptionHashes = &hashes
 		payload.ResolutionStatus = status
+		if status != pollResolutionResolved {
+			logrus.WithField("resolution_status", status).Warn("Poll vote selection resolution incomplete")
+		}
 		return payload
 	}
 
@@ -289,7 +293,7 @@ func preparePollWebhookPayload(ctx context.Context, client *whatsmeow.Client, st
 	}
 	decrypted, err := client.DecryptSecretEncryptedMessage(ctx, evt)
 	if err != nil {
-		logrus.Warnf("Failed to decrypt poll update %s for poll %s: %v", evt.Info.ID, pollID, err)
+		logrus.Warn("Failed to decrypt poll update")
 		return degraded()
 	}
 	decrypted = utils.UnwrapMessage(decrypted)
@@ -313,7 +317,7 @@ func preparePollWebhookPayload(ctx context.Context, client *whatsmeow.Client, st
 	definition := pollDefinitionFromCreation(deviceID, chatJID, pollID, version, poll, evt.Info.Timestamp)
 	if store != nil {
 		if err := store.UpsertPollDefinition(definition); err != nil {
-			logrus.Warnf("Failed to persist edited poll definition %s: %v", pollID, err)
+			logrus.Warn("Failed to persist edited poll definition")
 		}
 	}
 	return webhookPollFromDefinition("edit", definition)
@@ -331,7 +335,7 @@ func preparePollAddOptionPayload(store pollDefinitionStore, deviceID, chatJID st
 	option.Hash = pollOptionHash(option.Name)
 	if store != nil && option.Name != "" {
 		if err := store.AppendPollOption(deviceID, chatJID, pollID, option); err != nil {
-			logrus.Warnf("Failed to append option to poll %s: %v", pollID, err)
+			logrus.Warn("Failed to append option to poll")
 		}
 	}
 	payload := webhookPollFromDefinition("add_option", loadPollDefinition(store, deviceID, pollID, chatJID))

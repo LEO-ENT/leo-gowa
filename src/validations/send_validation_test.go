@@ -53,6 +53,28 @@ func TestValidateSendMessage(t *testing.T) {
 			}},
 			err: pkgError.ValidationError("message: cannot be blank."),
 		},
+		{
+			name: "should success with allow_reshare on status",
+			args: args{request: domainSend.MessageRequest{
+				BaseRequest: domainSend.BaseRequest{
+					Phone: "status@broadcast",
+				},
+				Message:      "Hello this is testing",
+				AllowReshare: true,
+			}},
+			err: nil,
+		},
+		{
+			name: "should error with allow_reshare outside status",
+			args: args{request: domainSend.MessageRequest{
+				BaseRequest: domainSend.BaseRequest{
+					Phone: "1728937129312@s.whatsapp.net",
+				},
+				Message:      "Hello this is testing",
+				AllowReshare: true,
+			}},
+			err: pkgError.ValidationError("allow_reshare is only supported when phone is status@broadcast"),
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +191,17 @@ func TestValidateSendImage(t *testing.T) {
 			err: nil,
 		},
 		{
+			name: "should error with allow_reshare outside status",
+			args: args{request: domainSend.ImageRequest{
+				BaseRequest: domainSend.BaseRequest{
+					Phone: "1728937129312@s.whatsapp.net",
+				},
+				Image:        image,
+				AllowReshare: true,
+			}},
+			err: pkgError.ValidationError("allow_reshare is only supported when phone is status@broadcast"),
+		},
+		{
 			name: "should error with empty phone",
 			args: args{request: domainSend.ImageRequest{
 				BaseRequest: domainSend.BaseRequest{
@@ -208,6 +241,30 @@ func TestValidateSendImage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateSendImage(context.Background(), tt.args.request)
 			assert.Equal(t, tt.err, err)
+		})
+	}
+}
+
+func TestValidateSendMediaMentions(t *testing.T) {
+	phone := domainSend.BaseRequest{Phone: "6289685028129@s.whatsapp.net"}
+	imageURL, fileURL, videoURL := "https://example.com/a.png", "https://example.com/a.pdf", "https://example.com/a.mp4"
+	invalidErr := pkgError.ValidationError("mention must use international phone number format")
+
+	tests := []struct {
+		name     string
+		mentions []string
+		err      any
+	}{
+		{name: "no mentions", mentions: nil, err: nil},
+		{name: "valid mentions and @everyone", mentions: []string{"628123456789", "@everyone"}, err: nil},
+		{name: "local-format mention", mentions: []string{"628123456789", "08123456789"}, err: invalidErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.err, ValidateSendImage(context.Background(), domainSend.ImageRequest{BaseRequest: phone, ImageURL: &imageURL, Mentions: tt.mentions}))
+			assert.Equal(t, tt.err, ValidateSendFile(context.Background(), domainSend.FileRequest{BaseRequest: phone, FileURL: &fileURL, Mentions: tt.mentions}))
+			assert.Equal(t, tt.err, ValidateSendVideo(context.Background(), domainSend.VideoRequest{BaseRequest: phone, VideoURL: &videoURL, Mentions: tt.mentions}))
 		})
 	}
 }
@@ -298,6 +355,17 @@ func TestValidateSendVideo(t *testing.T) {
 				Compress:       false,
 			}},
 			err: nil,
+		},
+		{
+			name: "should error with allow_reshare outside status",
+			args: args{request: domainSend.VideoRequest{
+				BaseRequest: domainSend.BaseRequest{
+					Phone: "1728937129312@s.whatsapp.net",
+				},
+				Video:        file,
+				AllowReshare: true,
+			}},
+			err: pkgError.ValidationError("allow_reshare is only supported when phone is status@broadcast"),
 		},
 		{
 			name: "should error with empty phone",
@@ -543,6 +611,26 @@ func TestValidateUpdateMessage(t *testing.T) {
 				Phone:     "1728937129312@s.whatsapp.net",
 			}},
 			err: pkgError.ValidationError("message: cannot be blank."),
+		},
+		{
+			name: "should success with valid link",
+			args: args{request: domainMessage.UpdateMessageRequest{
+				MessageID: "1382901271239781",
+				Message:   "some update message",
+				Phone:     "1728937129312@s.whatsapp.net",
+				Link:      "https://example.com",
+			}},
+			err: nil,
+		},
+		{
+			name: "should error with invalid link",
+			args: args{request: domainMessage.UpdateMessageRequest{
+				MessageID: "1382901271239781",
+				Message:   "some update message",
+				Phone:     "1728937129312@s.whatsapp.net",
+				Link:      "not a url",
+			}},
+			err: pkgError.ValidationError("link: must be a valid URL."),
 		},
 	}
 
