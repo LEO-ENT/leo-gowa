@@ -95,13 +95,29 @@ func ExtractPhoneFromVCard(vcard string) string {
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(strings.ToUpper(line), "TEL") {
-			if idx := strings.LastIndex(line, ":"); idx >= 0 {
-				return strings.TrimSpace(line[idx+1:])
-			}
+		if !isVCardTelProperty(line) {
+			continue
+		}
+		if idx := strings.LastIndex(line, ":"); idx >= 0 {
+			return strings.TrimSpace(line[idx+1:])
 		}
 	}
 	return ""
+}
+
+// isVCardTelProperty reports whether a vCard content line is a TEL property.
+// vCard allows any property name to carry a group prefix, and iOS exports every
+// phone that way ("item1.TEL;waid=...:+55 11 99999-0006"), so the group is
+// dropped before comparing the name.
+func isVCardTelProperty(line string) bool {
+	name := line
+	if idx := strings.IndexAny(name, ";:"); idx >= 0 {
+		name = name[:idx]
+	}
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return strings.EqualFold(strings.TrimSpace(name), "TEL")
 }
 
 // FormatLocationSummary builds a one-liner for an incoming location or live-location pin.
@@ -179,6 +195,10 @@ func ExtractMessageTextFromProto(msg *waE2E.Message) string {
 		return ""
 	}
 
+	// History sync passes raw messages, still inside the ephemeral/view-once
+	// wrappers that whatsmeow strips from live events.
+	msg = UnwrapMessage(msg)
+
 	// Check for regular text message
 	if text := msg.GetConversation(); text != "" {
 		return text
@@ -211,19 +231,10 @@ func ExtractMessageTextFromProto(msg *waE2E.Message) string {
 		return doc.GetCaption()
 	}
 
-	// Check for buttons response message
-	if buttonsResponse := msg.GetButtonsResponseMessage(); buttonsResponse != nil {
-		return buttonsResponse.GetSelectedDisplayText()
-	}
-
-	// Check for list response message
-	if listResponse := msg.GetListResponseMessage(); listResponse != nil {
-		return listResponse.GetTitle()
-	}
-
-	// Check for template button reply
-	if templateButtonReply := msg.GetTemplateButtonReplyMessage(); templateButtonReply != nil {
-		return templateButtonReply.GetSelectedDisplayText()
+	// Check for business messages (template, interactive, buttons, list,
+	// product, order) and the button/list replies to them
+	if text := extractBusinessMessageText(msg); text != "" {
+		return text
 	}
 
 	// Check for shared contact card
@@ -306,6 +317,10 @@ func ExtractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, me
 	if msg == nil {
 		return "", "", "", "", nil, nil, nil, 0
 	}
+
+	// Unwrap like ExtractMessageTextFromProto, so a wrapped captioned media
+	// message is never stored as caption-only text.
+	msg = UnwrapMessage(msg)
 
 	// Check for image message
 	if img := msg.GetImageMessage(); img != nil {
@@ -728,6 +743,8 @@ func ExtractContextInfo(msg *waE2E.Message) *waE2E.ContextInfo {
 		return msg.GetPtvMessage().GetContextInfo()
 	case msg.GetLiveLocationMessage() != nil:
 		return msg.GetLiveLocationMessage().GetContextInfo()
+	case msg.GetInteractiveMessage() != nil:
+		return msg.GetInteractiveMessage().GetContextInfo()
 	}
 	return nil
 }
@@ -848,17 +865,16 @@ func ParseJID(arg string) (types.JID, error) {
 	return recipient, nil
 }
 
-// FormatJID formats a JID string by removing any :number suffix
+// FormatJID formats a JID string by removing any :device suffix.
+// The suffix is stripped for every server, not just @s.whatsapp.net: messages
+// sent from WhatsApp Web/Desktop arrive with one, and whatsmeow rejects an AD
+// JID as a send recipient (ErrRecipientADJID).
 func FormatJID(jid string) types.JID {
-	// Remove any :number suffix if present
-	if idx := strings.LastIndex(jid, ":"); idx != -1 && strings.Contains(jid, "@s.whatsapp.net") {
-		jid = jid[:idx] + jid[strings.Index(jid, "@s.whatsapp.net"):]
-	}
 	formattedJID, err := ParseJID(jid)
 	if err != nil {
 		return types.JID{}
 	}
-	return formattedJID
+	return formattedJID.ToNonAD()
 }
 
 // ExtractedMedia represents extracted media information
@@ -1140,6 +1156,10 @@ func BuildEventMessage(evt *events.Message) (message EvtMessage) {
 			}
 			return message
 		}
+	}
+
+	if message.Text == "" {
+		message.Text = extractBusinessMessageText(msg)
 	}
 
 	if ci := ExtractContextInfo(msg); ci != nil {

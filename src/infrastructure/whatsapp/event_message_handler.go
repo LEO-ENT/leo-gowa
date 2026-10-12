@@ -16,14 +16,19 @@ import (
 )
 
 func handleMessage(ctx context.Context, evt *events.Message, chatStorageRepo domainChatStorage.IChatStorageRepository, client *whatsmeow.Client) {
-	// Log message metadata
-	metaParts := buildMessageMetaParts(evt)
-	log.Infof("Received message %s from %s (%s): %+v",
-		evt.Info.ID,
-		evt.Info.SourceString(),
-		strings.Join(metaParts, ", "),
-		evt.Message,
-	)
+	// Vote logs must never include the protobuf, sender, JID or backend errors.
+	isPollVote := utils.UnwrapMessage(evt.Message).GetPollUpdateMessage() != nil
+	if isPollVote {
+		log.Infof("Received poll vote")
+	} else {
+		metaParts := buildMessageMetaParts(evt)
+		log.Infof("Received message %s from %s (%s): %+v",
+			evt.Info.ID,
+			evt.Info.SourceString(),
+			strings.Join(metaParts, ", "),
+			evt.Message,
+		)
+	}
 
 	// Materialize SecretEncryptedMessage{MESSAGE_EDIT} envelope (sent by recent
 	// LID-migrated WhatsApp clients) into the legacy ProtocolMessage{MESSAGE_EDIT}
@@ -44,7 +49,11 @@ func handleMessage(ctx context.Context, evt *events.Message, chatStorageRepo dom
 
 	if err := chatStorageRepo.CreateMessage(ctx, evt); err != nil {
 		// Log storage errors to avoid silent failures that could lead to data loss
-		log.Errorf("Failed to store incoming message %s: %v", evt.Info.ID, err)
+		if isPollVote {
+			log.Warnf("Failed to store incoming poll vote")
+		} else {
+			log.Errorf("Failed to store incoming message %s: %v", evt.Info.ID, err)
+		}
 	}
 
 	// Handle image message if present
@@ -77,8 +86,23 @@ func buildMessageMetaParts(evt *events.Message) []string {
 	return metaParts
 }
 
+func shouldIgnoreImageDownload(autoDownloadMedia, ignoreStatusMedia bool, chatJID types.JID) bool {
+	if !autoDownloadMedia {
+		return true
+	}
+	// Match on the JID's shape rather than struct equality: whatsmeow's
+	// broadcast branch assigns source.Chat without ToNonAD(), so a
+	// device-qualified status JID would not compare equal to
+	// types.StatusBroadcastJID. IsBroadcastList() is defined as "broadcast
+	// server and user != status", so negating it selects exactly status.
+	if ignoreStatusMedia && chatJID.Server == types.BroadcastServer && !chatJID.IsBroadcastList() {
+		return true
+	}
+	return false
+}
+
 func handleImageMessage(ctx context.Context, evt *events.Message, client *whatsmeow.Client) {
-	if !config.WhatsappAutoDownloadMedia {
+	if shouldIgnoreImageDownload(config.WhatsappAutoDownloadMedia, config.WhatsappIgnoreStatusMedia, evt.Info.Chat) {
 		return
 	}
 	if client == nil {
@@ -168,6 +192,9 @@ func handleWebhookForward(ctx context.Context, evt *events.Message, client *what
 	// would only spawn a noise "Status" contact), and plain webhook consumers
 	// must not receive broadcast noise just because Chatwoot is enabled.
 	if strings.Contains(evt.Info.SourceString(), "broadcast") {
+		if utils.UnwrapMessage(evt.Message).GetPollUpdateMessage() != nil {
+			log.Warnf("Poll vote discarded: broadcast policy")
+		}
 		return
 	}
 
@@ -180,6 +207,10 @@ func handleWebhookForward(ctx context.Context, evt *events.Message, client *what
 		pollPayload = preparedPoll[0]
 	}
 	dispatchWebhookForward(ctx, func(webhookCtx context.Context) error {
-		return forwardMessageToWebhook(webhookCtx, client, evt, pollPayload)
+		err := forwardMessageToWebhook(webhookCtx, client, evt, pollPayload)
+		if err != nil && pollPayload != nil && pollPayload.Type == "vote" {
+			log.Warnf("Poll vote webhook forwarding failed")
+		}
+		return err
 	})
 }
