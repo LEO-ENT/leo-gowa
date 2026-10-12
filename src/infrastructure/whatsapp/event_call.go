@@ -60,7 +60,6 @@ func createCallOfferPayload(ctx context.Context, evt *events.CallOffer, deviceID
 	}
 	normalizedSenderJID := NormalizeJIDFromLID(ctx, senderJID, client)
 	payload["from"] = normalizedSenderJID.ToNonAD().String()
-	addSenderDisplayName(ctx, client, payload, false, "")
 	payload["auto_rejected"] = autoRejected
 
 	// Add caller platform info if available

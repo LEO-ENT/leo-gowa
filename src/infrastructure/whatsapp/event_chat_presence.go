@@ -40,7 +40,6 @@ func createChatPresencePayload(ctx context.Context, evt *events.ChatPresence, de
 	}
 	normalizedSenderJID := NormalizeJIDFromLID(ctx, senderJID, client)
 	payload["from"] = normalizedSenderJID.ToNonAD().String()
-	addSenderDisplayName(ctx, client, payload, false, "")
 
 	// Chat where the presence event occurred
 	payload["chat_id"] = evt.Chat.ToNonAD().String()

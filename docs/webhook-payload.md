@@ -204,24 +204,15 @@ Fields commonly found inside the `payload` object:
 | `chat_id`   | string   | Chat JID (e.g., `628987654321@s.whatsapp.net` or `120363...@g.us` for groups) |
 | `from`      | string   | Full JID of the sender (e.g., `628123456789@s.whatsapp.net`)                  |
 | `from_lid`  | string   | LID (Linked ID) of the sender if available                                    |
-| `sender_display_name` | string | Dynamic human-readable sender label. Present only when `from` is a non-empty string; see [Sender Display Name Resolution](#sender-display-name-resolution). |
-| `from_name` | string   | Legacy message-event push name of the sender. It remains available for compatibility and is not replaced by `sender_display_name`. |
+| `from_name` | string   | Legacy message-event push name of the sender. |
 | `timestamp` | string   | RFC3339 formatted timestamp (e.g., `2023-10-15T10:30:00Z`)                    |
 | `is_from_me` | boolean | Whether the message was sent by the current user                              |
 
-### Sender Display Name Resolution
+### Sender Display Name (removed in the LEO fork)
 
-`sender_display_name` is added only when `payload.from` is a non-empty string. It is omitted when `from` is missing,
-empty, or not a singular string. Resolution is best-effort and never prevents a webhook from being delivered: a contact
-lookup failure falls through the remaining applicable precedence candidates (including a live event push name when
-available), then deterministically to the JID user part, or to the original `from` value when it cannot be parsed.
-
-For another sender, the resolver prefers the saved contact full name, then the live WhatsApp push name supplied by the
-event (when available), the stored contact push name, the contact business name, and the JID user part. For the active
-account, it prefers the stored account push name, account JID user part, account JID, sender JID user part, and raw
-sender JID. The label is resolved at webhook-build time, so a saved-contact rename can change labels on later events.
-`from_name` remains the legacy message-event push name; it is a separate compatibility field and does not use this
-resolution order.
+The LEO fork never emits `sender_display_name` in any webhook payload. The upstream enrichment exposed
+address-book names and is removed from every event type; use `from` / `from_lid` (and, for message
+events, the legacy `from_name` push name). A contract test enforces the absence of the key at any depth.
 
 ## Message Events
 
@@ -236,7 +227,6 @@ resolution order.
     "chat_id": "628987654321@s.whatsapp.net",
     "from": "628123456789@s.whatsapp.net",
     "from_lid": "251556368777322@lid",
-    "sender_display_name": "Saved Contact",
     "from_name": "John Doe",
     "timestamp": "2023-10-15T10:30:00Z",
     "is_from_me": false,
@@ -255,7 +245,6 @@ resolution order.
     "id": "3EB0C127D7BACC83D6A2",
     "chat_id": "628987654321@s.whatsapp.net",
     "from": "628123456789@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "from_name": "John Doe",
     "timestamp": "2023-10-15T10:35:00Z",
     "is_from_me": false,
@@ -276,7 +265,6 @@ resolution order.
     "id": "88760C69D1F35FEB239102699AE9XXXX",
     "chat_id": "628987654321@s.whatsapp.net",
     "from": "628123456789@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "from_name": "John Doe",
     "timestamp": "2023-10-15T10:40:00Z",
     "is_from_me": false,
@@ -413,7 +401,6 @@ Triggered when a message is successfully delivered to the recipient's device.
     "chat_id": "120363402106XXXXX@g.us",
     "from": "6289685XXXXXX@s.whatsapp.net",
     "from_lid": "251556368777322@lid",
-    "sender_display_name": "Saved Contact",
     "receipt_type": "delivered",
     "receipt_type_description": "means the message was delivered to the device (but the user might not have noticed)."
   }
@@ -435,7 +422,6 @@ Triggered when a message is read by the recipient (they opened the chat and saw 
     ],
     "chat_id": "120363402106XXXXX@g.us",
     "from": "6289685XXXXXX@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "receipt_type": "read",
     "receipt_type_description": "the user opened the chat and saw the message."
   }
@@ -453,7 +439,6 @@ Triggered when a message is read by the recipient (they opened the chat and saw 
 | `payload.chat_id`                  | string   | Chat identifier (group or individual chat)                |
 | `payload.from`                     | string   | JID of the user who triggered the receipt                 |
 | `payload.from_lid`                 | string   | LID of the user (if available)                            |
-| `payload.sender_display_name`      | string   | Dynamic sender label when `payload.from` is non-empty     |
 | `payload.receipt_type`             | string   | Type of receipt: `"delivered"`, `"read"`, etc.            |
 | `payload.receipt_type_description` | string   | Human-readable description of the receipt type            |
 
@@ -477,7 +462,6 @@ Triggered when a user starts typing a text message.
   "timestamp": "2026-01-22T12:00:00Z",
   "payload": {
     "from": "628987654321@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "chat_id": "628987654321@s.whatsapp.net",
     "state": "composing",
     "media": "",
@@ -497,7 +481,6 @@ Triggered when a user stops typing (pauses or clears the input field).
   "timestamp": "2026-01-22T12:00:05Z",
   "payload": {
     "from": "628987654321@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "chat_id": "628987654321@s.whatsapp.net",
     "state": "paused",
     "media": "",
@@ -517,7 +500,6 @@ Triggered when a user starts recording a voice message.
   "timestamp": "2026-01-22T12:01:00Z",
   "payload": {
     "from": "628987654321@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "chat_id": "628987654321@s.whatsapp.net",
     "state": "composing",
     "media": "audio",
@@ -538,7 +520,6 @@ Triggered when a user starts typing in a group chat.
   "payload": {
     "from": "628987654321@s.whatsapp.net",
     "from_lid": "251556368777322@lid",
-    "sender_display_name": "Saved Contact",
     "chat_id": "120363402106XXXXX@g.us",
     "state": "composing",
     "media": "",
@@ -556,7 +537,6 @@ Triggered when a user starts typing in a group chat.
 | `timestamp`        | string   | RFC3339 formatted timestamp when the event was processed           |
 | `payload.from`     | string   | JID of the user who is typing (e.g., `628987654321@s.whatsapp.net`)|
 | `payload.from_lid` | string   | LID of the user (if available, typically in group chats)           |
-| `payload.sender_display_name` | string | Dynamic sender label when `payload.from` is non-empty               |
 | `payload.chat_id`  | string   | Chat identifier (individual or group)                              |
 | `payload.state`    | string   | Typing state: `"composing"` (typing) or `"paused"` (stopped)      |
 | `payload.media`    | string   | Media type: `""` (text message) or `"audio"` (voice recording)    |
@@ -843,7 +823,6 @@ Triggered when an incoming call is received.
   "payload": {
     "call_id": "ABC123DEF456",
     "from": "628987654321@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "auto_rejected": false,
     "remote_platform": "android",
     "remote_version": "2.24.1.5"
@@ -863,7 +842,6 @@ When `WHATSAPP_AUTO_REJECT_CALL=true`, calls are automatically rejected and the 
   "payload": {
     "call_id": "ABC123DEF456",
     "from": "628987654321@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "auto_rejected": true,
     "remote_platform": "android",
     "remote_version": "2.24.1.5",
@@ -881,7 +859,6 @@ When `WHATSAPP_AUTO_REJECT_CALL=true`, calls are automatically rejected and the 
 | `timestamp`               | string   | RFC3339 formatted timestamp when the call was received     |
 | `payload.call_id`         | string   | Unique identifier for the call                             |
 | `payload.from`            | string   | JID of the caller                                          |
-| `payload.sender_display_name` | string | Dynamic sender label when `payload.from` is non-empty      |
 | `payload.auto_rejected`   | boolean  | Whether the call was auto-rejected                         |
 | `payload.remote_platform` | string   | Platform of the caller (e.g., `"android"`, `"ios"`)        |
 | `payload.remote_version`  | string   | WhatsApp version of the caller                             |
@@ -934,7 +911,6 @@ When you receive a `call.offer` webhook event, extract the values from the paylo
   "payload": {
     "call_id": "ABC123DEF456",
     "from": "628987654321@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "auto_rejected": false
   }
 }
@@ -1387,7 +1363,6 @@ Triggered when a message is deleted for the current user (DeleteForMe event).
     "deleted_message_id": "3EB0C127D7BACC83D6A1",
     "timestamp": "2025-07-13T11:12:00Z",
     "from": "628987654321@s.whatsapp.net",
-    "sender_display_name": "Saved Contact",
     "chat_id": "628987654321@s.whatsapp.net",
     "original_content": "Hello, how are you?",
     "original_sender": "628987654321@s.whatsapp.net",
@@ -1404,7 +1379,6 @@ Triggered when a message is deleted for the current user (DeleteForMe event).
 | `payload.deleted_message_id`   | string   | ID of the deleted message                             |
 | `payload.timestamp`            | string   | RFC3339 timestamp when the delete event occurred      |
 | `payload.from`                 | string   | JID of the user who deleted the message               |
-| `payload.sender_display_name`  | string   | Dynamic sender label when `payload.from` is non-empty |
 | `payload.chat_id`              | string   | Chat identifier where the message was deleted         |
 | `payload.original_content`     | string   | Original message content (if available from storage)  |
 | `payload.original_sender`      | string   | Original sender of the deleted message                |

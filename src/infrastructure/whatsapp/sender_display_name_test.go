@@ -250,33 +250,3 @@ func TestSenderDisplayNameCache(t *testing.T) {
 		t.Fatalf("self contact lookups = %d, want 2", getter.calls)
 	}
 }
-
-func TestAddSenderDisplayNameRequiresSingularNonEmptyFrom(t *testing.T) {
-	tests := []struct {
-		name    string
-		payload map[string]any
-	}{
-		{
-			name:    "missing from",
-			payload: map[string]any{},
-		},
-		{
-			name:    "empty from",
-			payload: map[string]any{"from": ""},
-		},
-		{
-			name:    "non string from",
-			payload: map[string]any{"from": []string{"628123456789@s.whatsapp.net"}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			addSenderDisplayName(context.Background(), nil, tt.payload, false, "Live Push")
-
-			if _, ok := tt.payload["sender_display_name"]; ok {
-				t.Fatalf("sender_display_name unexpectedly added to payload %#v", tt.payload)
-			}
-		})
-	}
-}

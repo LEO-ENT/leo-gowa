@@ -22,91 +22,6 @@ func (s *callOfferLIDStore) GetPNForLID(_ context.Context, lid types.JID) (types
 	return s.phoneNumbers[lid], nil
 }
 
-func TestSenderBearingWebhookPayloadsIncludeSenderDisplayName(t *testing.T) {
-	accountJID := types.NewJID("628111111111", types.DefaultUserServer)
-	senderJID := types.NewJID("628123456789", types.DefaultUserServer)
-	client := &whatsmeow.Client{
-		Store: &store.Device{
-			ID:       &accountJID,
-			PushName: "Active Account",
-			Contacts: &senderDisplayNameContactGetter{
-				contacts: map[types.JID]types.ContactInfo{
-					senderJID: {
-						Found:    true,
-						FullName: "Saved Contact",
-					},
-				},
-			},
-		},
-	}
-
-	tests := []struct {
-		name  string
-		build func(*testing.T) map[string]any
-	}{
-		{
-			name: "receipt",
-			build: func(*testing.T) map[string]any {
-				return createReceiptPayload(context.Background(), &events.Receipt{
-					MessageSource: types.MessageSource{
-						Chat:   types.NewJID("628100000000", types.DefaultUserServer),
-						Sender: senderJID,
-					},
-					MessageIDs: []types.MessageID{"receipt-message"},
-					Timestamp:  time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC),
-					Type:       types.ReceiptTypeRead,
-				}, accountJID.String(), client)
-			},
-		},
-		{
-			name: "delete",
-			build: func(t *testing.T) map[string]any {
-				t.Helper()
-				payload, err := createDeletePayload(context.Background(), &events.DeleteForMe{
-					SenderJID: senderJID,
-					MessageID: "deleted-message",
-				}, nil, accountJID.String(), client)
-				assert.NoError(t, err)
-				return payload
-			},
-		},
-		{
-			name: "chat presence",
-			build: func(*testing.T) map[string]any {
-				return createChatPresencePayload(context.Background(), &events.ChatPresence{
-					MessageSource: types.MessageSource{
-						Chat:   types.NewJID("628100000000", types.DefaultUserServer),
-						Sender: senderJID,
-					},
-					State: types.ChatPresenceComposing,
-				}, accountJID.String(), client)
-			},
-		},
-		{
-			name: "call offer",
-			build: func(*testing.T) map[string]any {
-				return createCallOfferPayload(context.Background(), &events.CallOffer{
-					BasicCallMeta: types.BasicCallMeta{
-						CallCreator: senderJID,
-						CallID:      "call-id",
-						Timestamp:   time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC),
-					},
-				}, accountJID.String(), client, false)
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body := tt.build(t)
-			payload := body["payload"].(map[string]any)
-
-			assert.Equal(t, senderJID.String(), payload["from"])
-			assert.Equal(t, "Saved Contact", payload["sender_display_name"])
-		})
-	}
-}
-
 func TestCreateCallOfferPayloadNormalizesCaller(t *testing.T) {
 	originalLog := log
 	log = waLog.Noop
@@ -165,7 +80,6 @@ func TestCreateCallOfferPayloadNormalizesCaller(t *testing.T) {
 			payload := body["payload"].(map[string]any)
 
 			assert.Equal(t, tt.wantFrom, payload["from"])
-			assert.Equal(t, "Saved Caller", payload["sender_display_name"])
 			if tt.wantFromLID == "" {
 				assert.NotContains(t, payload, "from_lid")
 			} else {

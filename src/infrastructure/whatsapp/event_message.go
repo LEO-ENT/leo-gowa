@@ -101,7 +101,6 @@ func buildEventPayload(ctx context.Context, client *whatsmeow.Client, evt *event
 
 	// Build from/from_lid fields
 	buildFromFields(ctx, client, evt, payload)
-	addSenderDisplayName(ctx, client, payload, evt.Info.IsFromMe, evt.Info.PushName)
 
 	// Set from_name (pushname)
 	if pushname := evt.Info.PushName; pushname != "" {
@@ -173,9 +172,6 @@ func buildEventPayload(ctx context.Context, client *whatsmeow.Client, evt *event
 	}
 
 	if len(preparedPoll) > 0 && preparedPoll[0] != nil {
-		// LEO poll consumers pin the full legacy envelope in golden fixtures.
-		// Keep upstream display-name enrichment on non-poll messages only.
-		delete(payload, "sender_display_name")
 		payload["poll"] = preparedPoll[0]
 		if _, hasBody := payload["body"]; !hasBody {
 			payload["body"] = pollWebhookBody(preparedPoll[0])
