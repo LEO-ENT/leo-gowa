@@ -88,7 +88,6 @@ func createReceiptPayload(ctx context.Context, evt *events.Receipt, deviceID str
 	normalizedSenderJID := NormalizeJIDFromLID(ctx, senderJID, client)
 	payload["from"] = normalizedSenderJID.ToNonAD().String()
 	addChatwootIdentityAliases(payload, evt.Chat, senderJID, evt.SenderAlt, evt.RecipientAlt)
-	addSenderDisplayName(ctx, client, payload, false, "")
 
 	// Receipt type
 	if evt.Type == types.ReceiptTypeDelivered {
