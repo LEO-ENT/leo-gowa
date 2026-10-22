@@ -3300,6 +3300,10 @@ paths:
       tags:
         - group
       summary: Get list of participants in a group
+      description: >-
+        Returns a fresh group roster. A failed or pending participant addition
+        makes the whole readback unavailable with an existing error response;
+        no partial participant or administrator list is returned.
       parameters:
         - $ref: '#/components/parameters/DeviceIdHeader'
         - name: group_id

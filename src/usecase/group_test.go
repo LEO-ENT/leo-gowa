@@ -3,9 +3,13 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
 	domainGroup "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/group"
+	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waVnameCert"
@@ -211,6 +215,71 @@ func TestGroupParticipantCanonicalPNJSONPreservesLegacyFields(t *testing.T) {
 				if got, ok := payload[key]; !ok || got != want {
 					t.Errorf("legacy field %s = %v (present %v), want %v", key, got, ok, want)
 				}
+			}
+		})
+	}
+}
+
+func TestValidateGroupRosterParticipantsAcceptsFreshPNAndLIDAdmins(t *testing.T) {
+	pn := types.JID{User: "12025550101", Server: types.DefaultUserServer}
+	otherPN := types.JID{User: "12025550102", Server: types.DefaultUserServer}
+	lid := types.JID{User: "555000001", Server: types.HiddenUserServer}
+	participants := []types.GroupParticipant{
+		{JID: pn, PhoneNumber: pn, IsAdmin: true},
+		{JID: lid, LID: lid, PhoneNumber: otherPN, IsAdmin: true, IsSuperAdmin: true},
+	}
+	if err := validateGroupRosterParticipants(participants); err != nil {
+		t.Fatalf("valid fresh administrator roster refused: %v", err)
+	}
+}
+
+func TestValidateGroupRosterParticipantsRejectsEntireFailedOrPendingRoster(t *testing.T) {
+	pn := types.JID{User: "12025550101", Server: types.DefaultUserServer}
+	lid := types.JID{User: "555000001", Server: types.HiddenUserServer}
+	validAdmin := types.GroupParticipant{
+		JID: types.JID{User: "12025550102", Server: types.DefaultUserServer}, IsAdmin: true,
+	}
+	validSuperAdmin := types.GroupParticipant{
+		JID: types.JID{User: "12025550103", Server: types.DefaultUserServer}, IsAdmin: true, IsSuperAdmin: true,
+	}
+	const privateRequestCode = "synthetic-private-add-request-code"
+	tests := []struct {
+		name  string
+		entry types.GroupParticipant
+	}{
+		{"failed phone", types.GroupParticipant{JID: pn, Error: 403}},
+		{"failed lid", types.GroupParticipant{JID: lid, PhoneNumber: pn, Error: 403}},
+		{"pending phone", types.GroupParticipant{JID: pn, AddRequest: &types.GroupParticipantAddRequest{Code: privateRequestCode}}},
+		{"pending lid", types.GroupParticipant{JID: lid, PhoneNumber: pn, AddRequest: &types.GroupParticipantAddRequest{Code: privateRequestCode}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, order := range []struct {
+				name  string
+				index int
+			}{{"first", 0}, {"middle", 1}, {"last", 2}} {
+				t.Run(order.name, func(t *testing.T) {
+					valid := []types.GroupParticipant{validAdmin, validSuperAdmin}
+					roster := append([]types.GroupParticipant{}, valid[:order.index]...)
+					roster = append(roster, test.entry)
+					roster = append(roster, valid[order.index:]...)
+					err := validateGroupRosterParticipants(roster)
+					if err == nil {
+						t.Fatal("failed or pending row must refuse the whole roster despite valid administrators")
+					}
+					var typed pkgError.GenericError
+					if !errors.As(err, &typed) {
+						t.Fatalf("expected typed GenericError, got %T", err)
+					}
+					if typed.StatusCode() != http.StatusInternalServerError || typed.ErrCode() != "INTERNAL_SERVER_ERROR" || typed.Error() != "Group participants could not be verified" {
+						t.Fatalf("unexpected public roster refusal: status=%d code=%s message=%q", typed.StatusCode(), typed.ErrCode(), typed.Error())
+					}
+					for _, private := range []string{pn.String(), pn.User, lid.String(), lid.User, privateRequestCode, validAdmin.JID.User, validSuperAdmin.JID.User} {
+						if strings.Contains(typed.Error()+typed.ErrCode(), private) {
+							t.Fatal("public roster refusal contains a private identifier")
+						}
+					}
+				})
 			}
 		})
 	}
