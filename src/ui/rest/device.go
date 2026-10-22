@@ -48,7 +48,7 @@ func (handler *Device) ListDevices(c fiber.Ctx) error {
 }
 
 func (handler *Device) GetDevice(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	device, err := handler.Service.GetDevice(c.Context(), deviceID)
 	utils.PanicIfNeeded(err)
 
@@ -114,7 +114,7 @@ func (handler *Device) AddDevice(c fiber.Ctx) error {
 }
 
 func (handler *Device) RemoveDevice(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	err := handler.Service.RemoveDevice(c.Context(), deviceID)
 	utils.PanicIfNeeded(err)
 
@@ -127,7 +127,7 @@ func (handler *Device) RemoveDevice(c fiber.Ctx) error {
 }
 
 func (handler *Device) LoginDevice(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	response, err := handler.Service.LoginDevice(c.Context(), deviceID)
 	utils.PanicIfNeeded(err)
 
@@ -144,7 +144,7 @@ func (handler *Device) LoginDevice(c fiber.Ctx) error {
 }
 
 func (handler *Device) LoginDeviceWithCode(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	code, err := handler.Service.LoginDeviceWithCode(c.Context(), deviceID, c.Query("phone"))
 	utils.PanicIfNeeded(err)
 
@@ -160,7 +160,7 @@ func (handler *Device) LoginDeviceWithCode(c fiber.Ctx) error {
 }
 
 func (handler *Device) LogoutDevice(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	err := handler.Service.LogoutDevice(c.Context(), deviceID)
 	utils.PanicIfNeeded(err)
 
@@ -173,7 +173,7 @@ func (handler *Device) LogoutDevice(c fiber.Ctx) error {
 }
 
 func (handler *Device) ReconnectDevice(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	err := handler.Service.ReconnectDevice(c.Context(), deviceID)
 	utils.PanicIfNeeded(err)
 
@@ -186,7 +186,7 @@ func (handler *Device) ReconnectDevice(c fiber.Ctx) error {
 }
 
 func (handler *Device) Status(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	isConnected, isLoggedIn, err := handler.Service.GetStatus(c.Context(), deviceID)
 	utils.PanicIfNeeded(err)
 
@@ -204,7 +204,7 @@ func (handler *Device) Status(c fiber.Ctx) error {
 
 // UpdateDeviceWebhook handles PATCH /devices/:device_id/webhook.
 func (handler *Device) UpdateDeviceWebhook(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	var req struct {
 		WebhookURL                *string `json:"webhook_url"`
 		WebhookSecret             string  `json:"webhook_secret"`
@@ -256,7 +256,7 @@ func (handler *Device) UpdateDeviceWebhook(c fiber.Ctx) error {
 
 // GetDeviceWebhook handles GET /devices/:device_id/webhook.
 func (handler *Device) GetDeviceWebhook(c fiber.Ctx) error {
-	deviceID := c.Params("device_id")
+	deviceID := pathDeviceID(c)
 	config, err := handler.Service.GetDeviceWebhookConfig(c.Context(), deviceID)
 	utils.PanicIfNeeded(err)
 

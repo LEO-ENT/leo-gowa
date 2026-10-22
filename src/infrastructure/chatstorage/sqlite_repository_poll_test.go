@@ -171,3 +171,27 @@ func TestPollDefinitionsFollowCleanupPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestUpsertPollDefinitionTimestampGuardAndCreatedAt(t *testing.T) {
+	repo := newTestSQLiteRepository(t)
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	original := &domainChatStorage.PollDefinition{DeviceID: "fake-device", ChatJID: "1234567890@s.whatsapp.net", PollMessageID: "guard", Question: "original", CreatedAt: created, UpdatedAt: created}
+	require.NoError(t, repo.UpsertPollDefinition(original))
+	for _, delta := range []time.Duration{-time.Hour, 0, time.Hour} {
+		replacement := *original
+		replacement.Question = "replacement"
+		replacement.CreatedAt = created.Add(24 * time.Hour)
+		replacement.UpdatedAt = created.Add(delta)
+		require.NoError(t, repo.UpsertPollDefinition(&replacement))
+		got, err := repo.GetPollDefinition(original.DeviceID, original.ChatJID, original.PollMessageID)
+		require.NoError(t, err)
+		require.True(t, got.CreatedAt.Equal(created), "created_at must remain original")
+		if delta <= 0 {
+			require.Equal(t, "original", got.Question)
+			require.True(t, got.UpdatedAt.Equal(created))
+		} else {
+			require.Equal(t, "replacement", got.Question)
+			require.True(t, got.UpdatedAt.Equal(replacement.UpdatedAt))
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -95,7 +96,7 @@ func (r *SQLiteRepository) GetMessageByID(id string) (*domainChatStorage.Message
 	query := `
 		SELECT id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 			media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-			file_enc_sha256, file_length, referral_metadata, created_at, updated_at
+			file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
 		FROM messages
 		WHERE id = ?
 		LIMIT 1
@@ -115,7 +116,7 @@ func (r *SQLiteRepository) GetMessageByIDAndDevice(deviceID, id string) (*domain
 	query := `
 		SELECT id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 			media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-			file_enc_sha256, file_length, referral_metadata, created_at, updated_at
+			file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
 		FROM messages
 		WHERE id = ? AND device_id = ?
 		LIMIT 1
@@ -372,7 +373,8 @@ func (r *SQLiteRepository) DeleteChatByDevice(deviceID, jid string) error {
 	return tx.Commit()
 }
 
-// StoreMessage creates or updates a message
+// StoreMessage creates or updates a message. Empty ContextMetadata means context
+// was not supplied, so partial replays preserve any stored reply relationship.
 func (r *SQLiteRepository) StoreMessage(message *domainChatStorage.Message) error {
 	now := time.Now()
 	message.CreatedAt = now
@@ -387,11 +389,12 @@ func (r *SQLiteRepository) StoreMessage(message *domainChatStorage.Message) erro
 	result, err := r.db.Exec(`
 		UPDATE messages SET sender = ?, content = ?, timestamp = ?, is_from_me = ?,
 			media_type = ?, call_metadata = ?, filename = ?, url = ?, direct_path = ?, media_key = ?, file_sha256 = ?,
-			file_enc_sha256 = ?, file_length = ?, referral_metadata = ?, updated_at = ?
+			file_enc_sha256 = ?, file_length = ?, referral_metadata = ?,
+			context_metadata = COALESCE(NULLIF(?, ''), context_metadata, ''), updated_at = ?
 		WHERE id = ? AND chat_jid = ? AND device_id = ?
 	`, message.Sender, message.Content, message.Timestamp, message.IsFromMe,
 		message.MediaType, message.CallMetadata, message.Filename, message.URL, message.DirectPath, message.MediaKey, message.FileSHA256,
-		message.FileEncSHA256, message.FileLength, message.ReferralMetadata, message.UpdatedAt,
+		message.FileEncSHA256, message.FileLength, message.ReferralMetadata, message.ContextMetadata, message.UpdatedAt,
 		message.ID, message.ChatJID, message.DeviceID)
 	if err != nil {
 		return err
@@ -403,17 +406,94 @@ func (r *SQLiteRepository) StoreMessage(message *domainChatStorage.Message) erro
 			INSERT INTO messages (
 				id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 				media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-				file_enc_sha256, file_length, referral_metadata, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, message.ID, message.ChatJID, message.DeviceID, message.Sender, message.Content,
 			message.Timestamp, message.IsFromMe, message.MediaType, message.CallMetadata, message.Filename,
 			message.URL, message.DirectPath, message.MediaKey, message.FileSHA256, message.FileEncSHA256,
-			message.FileLength, message.ReferralMetadata, message.CreatedAt, message.UpdatedAt)
+			message.FileLength, message.ReferralMetadata, message.ContextMetadata, message.CreatedAt, message.UpdatedAt)
 	}
 	return err
 }
 
 // StoreMessagesBatch creates or updates multiple messages in a single transaction
+// storeSentMessagePreservingEdits writes a sent message without ever moving its
+// content backwards.
+//
+// The edit check lives INSIDE the UPDATE rather than in a preceding SELECT: a
+// separate check leaves a window where an edit can commit between the check and
+// the write, and the write then clobbers it. SQLite evaluates the EXISTS as part
+// of the same statement, so the check and the write are one operation.
+//
+// Everything except content is written as normal — only content is pinned once
+// an edit exists for this row.
+func (r *SQLiteRepository) storeSentMessagePreservingEdits(message *domainChatStorage.Message) error {
+	now := time.Now()
+	message.CreatedAt = now
+	message.UpdatedAt = now
+
+	if message.Content == "" && message.MediaType == "" {
+		return nil
+	}
+
+	const guardedUpdate = `
+		UPDATE messages SET sender = ?,
+			content = CASE WHEN EXISTS (
+				SELECT 1 FROM message_edits
+				WHERE original_message_id = messages.id
+				  AND chat_jid = messages.chat_jid
+				  AND device_id = messages.device_id
+			) THEN content ELSE ? END,
+			timestamp = ?, is_from_me = ?,
+			media_type = ?, call_metadata = ?, filename = ?, url = ?, direct_path = ?, media_key = ?, file_sha256 = ?,
+			file_enc_sha256 = ?, file_length = ?, referral_metadata = ?,
+			context_metadata = COALESCE(NULLIF(?, ''), context_metadata, ''), updated_at = ?
+		WHERE id = ? AND chat_jid = ? AND device_id = ?
+	`
+	updateArgs := []any{
+		message.Sender, message.Content, message.Timestamp, message.IsFromMe,
+		message.MediaType, message.CallMetadata, message.Filename, message.URL, message.DirectPath,
+		message.MediaKey, message.FileSHA256, message.FileEncSHA256, message.FileLength,
+		message.ReferralMetadata, message.ContextMetadata, message.UpdatedAt,
+		message.ID, message.ChatJID, message.DeviceID,
+	}
+
+	result, err := r.db.Exec(guardedUpdate, updateArgs...)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows > 0 {
+		return nil
+	}
+
+	_, insertErr := r.db.Exec(`
+		INSERT INTO messages (
+			id, chat_jid, device_id, sender, content, timestamp, is_from_me,
+			media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
+			file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, message.ID, message.ChatJID, message.DeviceID, message.Sender, message.Content,
+		message.Timestamp, message.IsFromMe, message.MediaType, message.CallMetadata, message.Filename,
+		message.URL, message.DirectPath, message.MediaKey, message.FileSHA256, message.FileEncSHA256,
+		message.FileLength, message.ReferralMetadata, message.ContextMetadata, message.CreatedAt, message.UpdatedAt)
+	if insertErr == nil {
+		return nil
+	}
+
+	// Lost the insert race: an edit created the row between the update above and
+	// this insert. Re-run the guarded update so the sent metadata still lands and
+	// the edited content is preserved. Only if that finds nothing is the insert
+	// error real.
+	retry, retryErr := r.db.Exec(guardedUpdate, updateArgs...)
+	if retryErr != nil {
+		return insertErr
+	}
+	if rows, _ := retry.RowsAffected(); rows > 0 {
+		return nil
+	}
+	return insertErr
+}
+
 func (r *SQLiteRepository) StoreMessagesBatch(messages []*domainChatStorage.Message) error {
 	if len(messages) == 0 {
 		return nil
@@ -429,7 +509,8 @@ func (r *SQLiteRepository) StoreMessagesBatch(messages []*domainChatStorage.Mess
 	updateStmt, err := tx.Prepare(`
 		UPDATE messages SET sender = ?, content = ?, timestamp = ?, is_from_me = ?,
 			media_type = ?, call_metadata = ?, filename = ?, url = ?, direct_path = ?, media_key = ?, file_sha256 = ?,
-			file_enc_sha256 = ?, file_length = ?, referral_metadata = ?, updated_at = ?
+			file_enc_sha256 = ?, file_length = ?, referral_metadata = ?,
+			context_metadata = COALESCE(NULLIF(?, ''), context_metadata, ''), updated_at = ?
 		WHERE id = ? AND chat_jid = ? AND device_id = ?
 	`)
 	if err != nil {
@@ -441,8 +522,8 @@ func (r *SQLiteRepository) StoreMessagesBatch(messages []*domainChatStorage.Mess
 		INSERT INTO messages (
 			id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 			media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-			file_enc_sha256, file_length, referral_metadata, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare insert statement: %w", err)
@@ -461,7 +542,7 @@ func (r *SQLiteRepository) StoreMessagesBatch(messages []*domainChatStorage.Mess
 		result, err := updateStmt.Exec(
 			message.Sender, message.Content, message.Timestamp, message.IsFromMe,
 			message.MediaType, message.CallMetadata, message.Filename, message.URL, message.DirectPath, message.MediaKey, message.FileSHA256,
-			message.FileEncSHA256, message.FileLength, message.ReferralMetadata, message.UpdatedAt,
+			message.FileEncSHA256, message.FileLength, message.ReferralMetadata, message.ContextMetadata, message.UpdatedAt,
 			message.ID, message.ChatJID, message.DeviceID,
 		)
 		if err != nil {
@@ -474,7 +555,7 @@ func (r *SQLiteRepository) StoreMessagesBatch(messages []*domainChatStorage.Mess
 				message.ID, message.ChatJID, message.DeviceID, message.Sender, message.Content,
 				message.Timestamp, message.IsFromMe, message.MediaType, message.CallMetadata, message.Filename,
 				message.URL, message.DirectPath, message.MediaKey, message.FileSHA256, message.FileEncSHA256,
-				message.FileLength, message.ReferralMetadata, message.CreatedAt, message.UpdatedAt,
+				message.FileLength, message.ReferralMetadata, message.ContextMetadata, message.CreatedAt, message.UpdatedAt,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert message %s: %w", message.ID, err)
@@ -578,7 +659,7 @@ func (r *SQLiteRepository) GetMessages(filter *domainChatStorage.MessageFilter) 
 	query := `
 		SELECT id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 			media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-			file_enc_sha256, file_length, referral_metadata, created_at, updated_at
+			file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
 		FROM messages
 		WHERE ` + strings.Join(conditions, " AND ") + `
 		ORDER BY timestamp DESC
@@ -651,7 +732,7 @@ func (r *SQLiteRepository) SearchMessages(deviceID, chatJID, searchText string, 
 	query := `
 		SELECT id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 			media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-			file_enc_sha256, file_length, referral_metadata, created_at, updated_at
+			file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
 		FROM messages
 		WHERE ` + strings.Join(conditions, " AND ") + `
 		ORDER BY timestamp DESC
@@ -764,39 +845,62 @@ func (r *SQLiteRepository) loadMessageReactions(deviceID, chatJID string, messag
 	return nil
 }
 
-// DeleteMessage deletes a specific message
+// DeleteMessage deletes a specific message. Chatwoot links are intentionally
+// preserved so asynchronous revoke/delete forwarding can still resolve them.
 func (r *SQLiteRepository) DeleteMessage(id, chatJID string) error {
-	if _, err := r.db.Exec("DELETE FROM message_reactions WHERE message_id = ? AND chat_jid = ?", id, chatJID); err != nil {
+	tx, err := r.db.Begin()
+	if err != nil {
 		return err
 	}
-	if _, err := r.db.Exec("DELETE FROM chatwoot_message_links WHERE wa_message_id = ? AND wa_chat_jid = ?", id, chatJID); err != nil {
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM message_reactions WHERE message_id = ? AND chat_jid = ?", id, chatJID); err != nil {
 		return err
 	}
-	if _, err := r.db.Exec("DELETE FROM poll_definitions WHERE poll_message_id = ? AND chat_jid = ?", id, chatJID); err != nil {
+	if _, err := tx.Exec("DELETE FROM message_edits WHERE original_message_id = ? AND chat_jid = ?", id, chatJID); err != nil {
 		return err
 	}
-	_, err := r.db.Exec("DELETE FROM messages WHERE id = ? AND chat_jid = ?", id, chatJID)
-	return err
+	if _, err := tx.Exec("DELETE FROM poll_definitions WHERE poll_message_id = ? AND chat_jid = ?", id, chatJID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM messages WHERE id = ? AND chat_jid = ?", id, chatJID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// DeleteMessageByDevice deletes a specific message for a specific device
+// DeleteMessageByDevice deletes a specific message for a specific device.
+// Chatwoot links are intentionally preserved for asynchronous delete sync.
 func (r *SQLiteRepository) DeleteMessageByDevice(deviceID, id, chatJID string) error {
-	if _, err := r.db.Exec("DELETE FROM message_reactions WHERE message_id = ? AND chat_jid = ? AND device_id = ?", id, chatJID, deviceID); err != nil {
+	tx, err := r.db.Begin()
+	if err != nil {
 		return err
 	}
-	if _, err := r.db.Exec("DELETE FROM chatwoot_message_links WHERE wa_message_id = ? AND wa_chat_jid = ? AND device_id = ?", id, chatJID, deviceID); err != nil {
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM message_reactions WHERE message_id = ? AND chat_jid = ? AND device_id = ?", id, chatJID, deviceID); err != nil {
 		return err
 	}
-	if _, err := r.db.Exec("DELETE FROM poll_definitions WHERE poll_message_id = ? AND chat_jid = ? AND device_id = ?", id, chatJID, deviceID); err != nil {
+	if _, err := tx.Exec("DELETE FROM message_edits WHERE original_message_id = ? AND chat_jid = ? AND device_id = ?", id, chatJID, deviceID); err != nil {
 		return err
 	}
-	_, err := r.db.Exec("DELETE FROM messages WHERE id = ? AND chat_jid = ? AND device_id = ?", id, chatJID, deviceID)
-	return err
+	if _, err := tx.Exec("DELETE FROM poll_definitions WHERE poll_message_id = ? AND chat_jid = ? AND device_id = ?", id, chatJID, deviceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM messages WHERE id = ? AND chat_jid = ? AND device_id = ?", id, chatJID, deviceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpsertPollDefinition stores the ordered poll option catalogue used to map
 // decrypted vote hashes back to human-readable names.
 func (r *SQLiteRepository) UpsertPollDefinition(definition *domainChatStorage.PollDefinition) error {
+	return r.UpsertPollDefinitionContext(context.Background(), definition)
+}
+
+// UpsertPollDefinitionContext allows bounded cancellation of SQLite contention.
+func (r *SQLiteRepository) UpsertPollDefinitionContext(ctx context.Context, definition *domainChatStorage.PollDefinition) error {
 	if definition == nil {
 		return fmt.Errorf("poll definition is required")
 	}
@@ -816,47 +920,21 @@ func (r *SQLiteRepository) UpsertPollDefinition(definition *domainChatStorage.Po
 		definition.CreatedAt = definition.UpdatedAt
 	}
 
-	tx, err := r.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	var existingUpdatedAt time.Time
-	err = tx.QueryRow(`
-		SELECT updated_at FROM poll_definitions
-		WHERE device_id = ? AND chat_jid = ? AND poll_message_id = ?
-	`, definition.DeviceID, definition.ChatJID, definition.PollMessageID).Scan(&existingUpdatedAt)
-	switch {
-	case err == nil:
-		if !definition.UpdatedAt.After(existingUpdatedAt) {
-			return tx.Commit()
-		}
-		_, err = tx.Exec(`
-			UPDATE poll_definitions
-			SET question = ?, options_json = ?, selectable_option_count = ?, version = ?, updated_at = ?
-			WHERE device_id = ? AND chat_jid = ? AND poll_message_id = ?
-		`, definition.Question, string(optionsJSON), definition.SelectableOptionCount, definition.Version, definition.UpdatedAt,
-			definition.DeviceID, definition.ChatJID, definition.PollMessageID)
-		if err != nil {
-			return err
-		}
-		return tx.Commit()
-	case err != sql.ErrNoRows:
-		return err
-	}
-
-	_, err = tx.Exec(`
+	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO poll_definitions (
 			device_id, chat_jid, poll_message_id, question, options_json,
 			selectable_option_count, version, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(device_id, chat_jid, poll_message_id) DO UPDATE SET
+			question = excluded.question,
+			options_json = excluded.options_json,
+			selectable_option_count = excluded.selectable_option_count,
+			version = excluded.version,
+			updated_at = excluded.updated_at
+		WHERE excluded.updated_at > poll_definitions.updated_at
 	`, definition.DeviceID, definition.ChatJID, definition.PollMessageID, definition.Question, string(optionsJSON),
 		definition.SelectableOptionCount, definition.Version, definition.CreatedAt, definition.UpdatedAt)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+	return err
 }
 
 // GetPollDefinition retrieves one poll definition using its full device/chat identity.
@@ -916,6 +994,57 @@ func (r *SQLiteRepository) GetPollDefinitionByIDAndDevice(deviceID, pollMessageI
 		}
 		if err := json.Unmarshal([]byte(optionsJSON), &definition.Options); err != nil {
 			return nil, fmt.Errorf("failed to decode poll options for %s: %w", pollMessageID, err)
+		}
+		match = definition
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return match, nil
+}
+
+// GetPollDefinitionForRegisteredCreator retrieves only public poll metadata from
+// a registered sibling account for an exact group/poll identity. The caller must
+// establish the creator identity from the authenticated poll vote event. Device
+// identities here are storage JIDs, never user-facing registry slot aliases.
+func (r *SQLiteRepository) GetPollDefinitionForRegisteredCreator(receiverDeviceID, creatorDeviceID, chatJID, pollMessageID string) (*domainChatStorage.PollDefinition, error) {
+	if strings.TrimSpace(receiverDeviceID) == "" || strings.TrimSpace(creatorDeviceID) == "" || strings.TrimSpace(pollMessageID) == "" || !strings.HasSuffix(chatJID, "@g.us") {
+		return nil, nil
+	}
+	// All registration checks and metadata reads share one SQLite statement snapshot.
+	// EXISTS avoids duplicate rows when companion slots share the same storage JID.
+	rows, err := r.db.Query(`
+  SELECT p.device_id, p.chat_jid, p.poll_message_id, p.question, p.options_json,
+         p.selectable_option_count, p.version, p.created_at, p.updated_at
+  FROM poll_definitions p
+  WHERE p.chat_jid = ? AND p.poll_message_id = ? AND p.device_id <> ?
+    AND EXISTS (SELECT 1 FROM devices WHERE jid = ? AND jid <> '')
+    AND EXISTS (SELECT 1 FROM devices WHERE jid = ? AND jid <> '')
+    AND EXISTS (SELECT 1 FROM devices WHERE jid = p.device_id AND jid <> '')
+  ORDER BY p.device_id
+ `, chatJID, pollMessageID, receiverDeviceID, receiverDeviceID, creatorDeviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var match *domainChatStorage.PollDefinition
+	for rows.Next() {
+		definition := &domainChatStorage.PollDefinition{}
+		var optionsJSON string
+		if err := rows.Scan(&definition.DeviceID, &definition.ChatJID, &definition.PollMessageID, &definition.Question, &optionsJSON,
+			&definition.SelectableOptionCount, &definition.Version, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(optionsJSON), &definition.Options); err != nil {
+			return nil, fmt.Errorf("registered sibling poll metadata is invalid")
+		}
+		if match != nil {
+			if match.Question != definition.Question || match.SelectableOptionCount != definition.SelectableOptionCount || match.Version != definition.Version || !reflect.DeepEqual(match.Options, definition.Options) {
+				return nil, fmt.Errorf("registered sibling poll metadata is ambiguous")
+			}
+			if !definition.UpdatedAt.After(match.UpdatedAt) {
+				continue
+			}
 		}
 		match = definition
 	}
@@ -1548,12 +1677,14 @@ func (r *SQLiteRepository) getCount(query string, args ...any) (int64, error) {
 // scanMessage is a private helper for scanning message rows
 func (r *SQLiteRepository) scanMessage(scanner interface{ Scan(...any) error }) (*domainChatStorage.Message, error) {
 	message := &domainChatStorage.Message{}
+	var contextMetadata sql.NullString
 	err := scanner.Scan(
 		&message.ID, &message.ChatJID, &message.DeviceID, &message.Sender, &message.Content,
 		&message.Timestamp, &message.IsFromMe, &message.MediaType, &message.CallMetadata, &message.Filename,
 		&message.URL, &message.DirectPath, &message.MediaKey, &message.FileSHA256, &message.FileEncSHA256,
-		&message.FileLength, &message.ReferralMetadata, &message.CreatedAt, &message.UpdatedAt,
+		&message.FileLength, &message.ReferralMetadata, &contextMetadata, &message.CreatedAt, &message.UpdatedAt,
 	)
+	message.ContextMetadata = contextMetadata.String
 	return message, err
 }
 
@@ -1875,6 +2006,11 @@ func (r *SQLiteRepository) TruncateAllChats() error {
 		return fmt.Errorf("failed to delete poll definitions: %w", err)
 	}
 
+	_, err = tx.Exec("DELETE FROM scheduled_sends")
+	if err != nil {
+		return fmt.Errorf("failed to delete scheduled sends: %w", err)
+	}
+
 	// Delete messages after dependent rows to keep cleanup explicit.
 	_, err = tx.Exec("DELETE FROM messages")
 	if err != nil {
@@ -1926,6 +2062,10 @@ func (r *SQLiteRepository) DeleteDeviceData(deviceID string) error {
 		return fmt.Errorf("failed to delete device poll definitions: %w", err)
 	}
 
+	if _, err := tx.Exec(`DELETE FROM scheduled_sends WHERE device_id = ?`, deviceID); err != nil {
+		return fmt.Errorf("failed to delete device scheduled sends: %w", err)
+	}
+
 	// Delete messages after dependent rows via direct device_id filter.
 	if _, err := tx.Exec(`DELETE FROM messages WHERE device_id = ?`, deviceID); err != nil {
 		return fmt.Errorf("failed to delete device messages: %w", err)
@@ -1936,6 +2076,218 @@ func (r *SQLiteRepository) DeleteDeviceData(deviceID string) error {
 	}
 
 	return tx.Commit()
+}
+
+func (r *SQLiteRepository) CreateScheduledSend(job *domainChatStorage.ScheduledSend) error {
+	if job == nil || strings.TrimSpace(job.ID) == "" || strings.TrimSpace(job.DeviceID) == "" || strings.TrimSpace(job.MessageType) == "" {
+		return fmt.Errorf("scheduled send requires id, device id, and message type")
+	}
+	now := time.Now().UTC()
+	if job.CreatedAt.IsZero() {
+		job.CreatedAt = now
+	}
+	job.UpdatedAt = now
+	if job.Status == "" {
+		job.Status = "active"
+	}
+	_, err := r.db.Exec(`
+		INSERT INTO scheduled_sends (
+			id, device_id, message_type, payload_json, assets_json, phone, summary,
+			scheduled_at, next_run_at, timezone, recurrence, weekdays_json, day_of_month,
+			end_at, occurrence_limit, occurrence_count, attempts, status, lease_token,
+			lease_until, last_run_at, last_message_id, last_error, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, job.ID, job.DeviceID, job.MessageType, job.PayloadJSON, job.AssetsJSON, job.Phone, job.Summary,
+		job.ScheduledAt, job.NextRunAt, job.Timezone, job.Recurrence, job.WeekdaysJSON, job.DayOfMonth,
+		job.EndAt, job.OccurrenceLimit, job.OccurrenceCount, job.Attempts, job.Status, job.LeaseToken,
+		job.LeaseUntil, job.LastRunAt, job.LastMessageID, job.LastError, job.CreatedAt, job.UpdatedAt)
+	return err
+}
+
+// scheduledSendScope builds the shared WHERE clause so the list and the count
+// can never drift out of agreement on what a page is counted against.
+func scheduledSendScope(filter domainChatStorage.ScheduledSendFilter) (string, []any) {
+	clause := " WHERE device_id = ?"
+	args := []any{filter.DeviceID}
+	if status := strings.TrimSpace(filter.Status); status != "" {
+		clause += " AND status = ?"
+		args = append(args, status)
+	}
+	if messageType := strings.TrimSpace(filter.MessageType); messageType != "" {
+		clause += " AND message_type = ?"
+		args = append(args, messageType)
+	}
+	// One box over both columns: people look for a schedule either by who it
+	// goes to or by what it says.
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		pattern := "%" + search + "%"
+		clause += " AND (phone LIKE ? OR summary LIKE ?)"
+		args = append(args, pattern, pattern)
+	}
+	return clause, args
+}
+
+// A limit of zero or less returns every row; the usecase validates the API's
+// page size before it gets here.
+func (r *SQLiteRepository) ListScheduledSends(filter domainChatStorage.ScheduledSendFilter) ([]*domainChatStorage.ScheduledSend, error) {
+	if strings.TrimSpace(filter.DeviceID) == "" {
+		return nil, fmt.Errorf("device id is required")
+	}
+	clause, args := scheduledSendScope(filter)
+	limit, offset := filter.Limit, filter.Offset
+	query := `SELECT ` + scheduledSendColumns + ` FROM scheduled_sends` + clause
+	// Upcoming work first by due time, then history newest first.
+	query += ` ORDER BY CASE WHEN status IN ('active', 'running', 'paused') THEN 0 ELSE 1 END,
+		CASE WHEN status IN ('active', 'running', 'paused') THEN next_run_at END ASC,
+		updated_at DESC, id ASC`
+	if limit > 0 {
+		if limit > 1000 {
+			limit = 1000
+		}
+		// SQLite rejects a bare OFFSET, so it only rides along with a LIMIT.
+		query += " LIMIT ? OFFSET ?"
+		if offset < 0 {
+			offset = 0
+		}
+		args = append(args, limit, offset)
+	}
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*domainChatStorage.ScheduledSend, 0)
+	for rows.Next() {
+		job, err := scanScheduledSend(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, job)
+	}
+	return result, rows.Err()
+}
+
+func (r *SQLiteRepository) CountScheduledSends(filter domainChatStorage.ScheduledSendFilter) (int, error) {
+	if strings.TrimSpace(filter.DeviceID) == "" {
+		return 0, fmt.Errorf("device id is required")
+	}
+	clause, args := scheduledSendScope(filter)
+	var total int
+	err := r.db.QueryRow(`SELECT COUNT(*) FROM scheduled_sends`+clause, args...).Scan(&total)
+	return total, err
+}
+
+func (r *SQLiteRepository) GetScheduledSend(deviceID, id string) (*domainChatStorage.ScheduledSend, error) {
+	row := r.db.QueryRow(`SELECT `+scheduledSendColumns+` FROM scheduled_sends WHERE device_id = ? AND id = ?`, deviceID, id)
+	job, err := scanScheduledSend(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return job, err
+}
+
+// ClaimNextScheduledSend picks and leases one due job in a single statement, so
+// there is no read-then-write window and a crash strands at most that job.
+func (r *SQLiteRepository) ClaimNextScheduledSend(now, leaseUntil time.Time, leaseToken string) (*domainChatStorage.ScheduledSend, error) {
+	row := r.db.QueryRow(`UPDATE scheduled_sends SET status = 'running', lease_token = ?, lease_until = ?, updated_at = ?
+		WHERE id = (SELECT id FROM scheduled_sends WHERE status = 'active' AND next_run_at <= ? ORDER BY next_run_at ASC, created_at ASC LIMIT 1)
+		RETURNING `+scheduledSendColumns, leaseToken, leaseUntil, now, now)
+	job, err := scanScheduledSend(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return job, err
+}
+
+func (r *SQLiteRepository) ListExpiredScheduledSends(now time.Time) ([]*domainChatStorage.ScheduledSend, error) {
+	rows, err := r.db.Query(`SELECT `+scheduledSendColumns+` FROM scheduled_sends WHERE status = 'running' AND lease_until <= ?`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]*domainChatStorage.ScheduledSend, 0)
+	for rows.Next() {
+		job, err := scanScheduledSend(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, job)
+	}
+	return result, rows.Err()
+}
+
+func (r *SQLiteRepository) ListScheduledSendIDs() ([]string, error) {
+	rows, err := r.db.Query(`SELECT id FROM scheduled_sends WHERE status IN ('active', 'running', 'paused')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (r *SQLiteRepository) RetryScheduledSend(id, leaseToken, lastError string, attempts int, nextRunAt time.Time) error {
+	_, err := r.db.Exec(`UPDATE scheduled_sends SET status = 'active', attempts = ?, last_error = ?, next_run_at = ?, lease_token = '', lease_until = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?`, attempts, lastError, nextRunAt, time.Now().UTC(), id, leaseToken)
+	return err
+}
+
+func (r *SQLiteRepository) CompleteScheduledSend(id, leaseToken, status, lastMessageID string, occurrenceCount int, nextRunAt *time.Time) error {
+	_, err := r.db.Exec(`UPDATE scheduled_sends SET status = ?, occurrence_count = ?, attempts = 0, last_message_id = ?, last_run_at = ?, next_run_at = COALESCE(?, next_run_at), last_error = '', lease_token = '', lease_until = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?`, status, occurrenceCount, lastMessageID, time.Now().UTC(), nextRunAt, time.Now().UTC(), id, leaseToken)
+	return err
+}
+
+func (r *SQLiteRepository) FailScheduledSend(id, leaseToken, lastError string) error {
+	_, err := r.db.Exec(`UPDATE scheduled_sends SET status = 'failed', last_error = ?, lease_token = '', lease_until = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?`, lastError, time.Now().UTC(), id, leaseToken)
+	return err
+}
+
+func (r *SQLiteRepository) SetScheduledSendStatus(deviceID, id string, from []string, status string, nextRunAt *time.Time) (bool, error) {
+	args := []any{status, nextRunAt, time.Now().UTC(), deviceID, id}
+	for _, source := range from {
+		args = append(args, source)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(from)), ", ")
+	result, err := r.db.Exec(`UPDATE scheduled_sends SET status = ?, next_run_at = COALESCE(?, next_run_at), lease_token = '', lease_until = NULL, updated_at = ? WHERE device_id = ? AND id = ? AND status IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected > 0, err
+}
+
+const scheduledSendColumns = `id, device_id, message_type, payload_json, assets_json, phone, summary,
+	scheduled_at, next_run_at, timezone, recurrence, weekdays_json, day_of_month,
+	end_at, occurrence_limit, occurrence_count, attempts, status, lease_token,
+	lease_until, last_run_at, last_message_id, last_error, created_at, updated_at`
+
+func scanScheduledSend(scanner interface{ Scan(...any) error }) (*domainChatStorage.ScheduledSend, error) {
+	job := &domainChatStorage.ScheduledSend{}
+	var endAt, leaseUntil, lastRunAt sql.NullTime
+	if err := scanner.Scan(
+		&job.ID, &job.DeviceID, &job.MessageType, &job.PayloadJSON, &job.AssetsJSON, &job.Phone, &job.Summary,
+		&job.ScheduledAt, &job.NextRunAt, &job.Timezone, &job.Recurrence, &job.WeekdaysJSON, &job.DayOfMonth,
+		&endAt, &job.OccurrenceLimit, &job.OccurrenceCount, &job.Attempts, &job.Status, &job.LeaseToken,
+		&leaseUntil, &lastRunAt, &job.LastMessageID, &job.LastError, &job.CreatedAt, &job.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if endAt.Valid {
+		job.EndAt = &endAt.Time
+	}
+	if leaseUntil.Valid {
+		job.LeaseUntil = &leaseUntil.Time
+	}
+	if lastRunAt.Valid {
+		job.LastRunAt = &lastRunAt.Time
+	}
+	return job, nil
 }
 
 // SaveDeviceRecord upserts a device registration for persistence across restarts.
@@ -2290,8 +2642,21 @@ func (r *SQLiteRepository) CreateMessage(ctx context.Context, evt *events.Messag
 	// Store the full sender JID (user@server) to ensure consistency between received and sent messages
 	sender := normalizedSender.ToNonAD().String()
 
+	if revokedMessageID := extractRevokedMessageID(evt.Message); revokedMessageID != "" {
+		return r.DeleteMessageByDevice(deviceID, revokedMessageID, chatJID)
+	}
+
+	// PushName belongs to the sender. For messages sent from this account, using
+	// it as the peer chat name would label the recipient with our own name.
+	chatNameSenderUser := normalizedSender.User
+	chatNamePushName := evt.Info.PushName
+	if evt.Info.IsFromMe {
+		chatNameSenderUser = normalizedChatJID.User
+		chatNamePushName = ""
+	}
+
 	// Get appropriate chat name using pushname if available (device-scoped)
-	chatName := r.GetChatNameWithPushNameByDevice(deviceID, normalizedChatJID, chatJID, normalizedSender.User, evt.Info.PushName)
+	chatName := r.GetChatNameWithPushNameByDevice(deviceID, normalizedChatJID, chatJID, chatNameSenderUser, chatNamePushName)
 
 	// Get existing chat to preserve ephemeral_expiration and archived status if needed (device-scoped)
 	existingChat, err := r.GetChatByDevice(deviceID, chatJID)
@@ -2381,10 +2746,22 @@ func (r *SQLiteRepository) CreateMessage(ctx context.Context, evt *events.Messag
 		FileEncSHA256:    fileEncSHA256,
 		FileLength:       fileLength,
 		ReferralMetadata: referralMetadata,
+		ContextMetadata:  utils.ExtractContextMetadata(evt.Message),
 	}
 
 	// Store the message
 	return r.StoreMessage(message)
+}
+
+func extractRevokedMessageID(msg *waE2E.Message) string {
+	if msg == nil {
+		return ""
+	}
+	protocolMessage := utils.UnwrapMessage(msg).GetProtocolMessage()
+	if protocolMessage == nil || protocolMessage.GetType() != waE2E.ProtocolMessage_REVOKE {
+		return ""
+	}
+	return protocolMessage.GetKey().GetID()
 }
 
 func extractEditedMessage(msg *waE2E.Message) *waE2E.Message {
@@ -2450,6 +2827,8 @@ func (r *SQLiteRepository) storeEditedMessage(ctx context.Context, evt *events.M
 		previousContent = currentMessage.Content
 	}
 
+	currentMessage.ContextMetadata = utils.ExtractContextMetadata(editedMessage)
+
 	edit := &domainChatStorage.MessageEdit{
 		OriginalMessageID: originalMessageID,
 		EditEventID:       evt.Info.ID,
@@ -2470,9 +2849,10 @@ func (r *SQLiteRepository) storeEditedMessage(ctx context.Context, evt *events.M
 
 	if messageExists {
 		if _, err := tx.Exec(`
-			UPDATE messages SET content = ?, updated_at = ?
+			UPDATE messages SET content = ?,
+				context_metadata = COALESCE(NULLIF(?, ''), context_metadata, ''), updated_at = ?
 			WHERE id = ? AND chat_jid = ? AND device_id = ?
-		`, newContent, now, originalMessageID, chatJID, deviceID); err != nil {
+		`, newContent, currentMessage.ContextMetadata, now, originalMessageID, chatJID, deviceID); err != nil {
 			return fmt.Errorf("failed to update original message %s: %w", originalMessageID, err)
 		}
 	} else {
@@ -2480,12 +2860,12 @@ func (r *SQLiteRepository) storeEditedMessage(ctx context.Context, evt *events.M
 			INSERT INTO messages (
 				id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 				media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-				file_enc_sha256, file_length, referral_metadata, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, currentMessage.ID, currentMessage.ChatJID, currentMessage.DeviceID, currentMessage.Sender, currentMessage.Content,
 			currentMessage.Timestamp, currentMessage.IsFromMe, currentMessage.MediaType, currentMessage.CallMetadata, currentMessage.Filename,
 			currentMessage.URL, currentMessage.DirectPath, currentMessage.MediaKey, currentMessage.FileSHA256, currentMessage.FileEncSHA256,
-			currentMessage.FileLength, currentMessage.ReferralMetadata, now, now); err != nil {
+			currentMessage.FileLength, currentMessage.ReferralMetadata, currentMessage.ContextMetadata, now, now); err != nil {
 			return fmt.Errorf("failed to insert edited message %s: %w", originalMessageID, err)
 		}
 	}
@@ -2501,7 +2881,7 @@ func (r *SQLiteRepository) getMessageByDeviceAndChatIDAndMessageID(deviceID, cha
 	query := `
 		SELECT id, chat_jid, device_id, sender, content, timestamp, is_from_me,
 			media_type, call_metadata, filename, url, direct_path, media_key, file_sha256,
-			file_enc_sha256, file_length, referral_metadata, created_at, updated_at
+			file_enc_sha256, file_length, referral_metadata, context_metadata, created_at, updated_at
 		FROM messages
 		WHERE id = ? AND chat_jid = ? AND device_id = ?
 		LIMIT 1
@@ -2821,23 +3201,29 @@ func (r *SQLiteRepository) StoreSentMessageWithContext(ctx context.Context, mess
 	// itself was missing. Losing only the chat bump is invisible instead —
 	// the next stored message repairs it.
 	message := &domainChatStorage.Message{
-		ID:            messageID,
-		ChatJID:       chatJID,
-		DeviceID:      deviceID,
-		Sender:        senderJID,
-		Content:       content,
-		Timestamp:     timestamp,
-		IsFromMe:      true,
-		MediaType:     mediaType,
-		Filename:      filename,
-		URL:           mediaURL,
-		DirectPath:    directPath,
-		MediaKey:      mediaKey,
-		FileSHA256:    fileSHA256,
-		FileEncSHA256: fileEncSHA256,
-		FileLength:    fileLength,
+		ID:              messageID,
+		ChatJID:         chatJID,
+		DeviceID:        deviceID,
+		Sender:          senderJID,
+		Content:         content,
+		Timestamp:       timestamp,
+		IsFromMe:        true,
+		MediaType:       mediaType,
+		Filename:        filename,
+		URL:             mediaURL,
+		DirectPath:      directPath,
+		MediaKey:        mediaKey,
+		FileSHA256:      fileSHA256,
+		FileEncSHA256:   fileEncSHA256,
+		FileLength:      fileLength,
+		ContextMetadata: utils.ExtractContextMetadata(msg),
 	}
-	if err := r.StoreMessage(message); err != nil {
+	// wrapSendMessage persists asynchronously, so an edit sent moments later can
+	// reach storage BEFORE this does. StoreMessage's existing-row path updates
+	// content unconditionally, so writing the original text now would roll that
+	// edit back — and mergeReplyContext quotes from that row, which is the stale
+	// quote the edit sync exists to prevent.
+	if err := r.storeSentMessagePreservingEdits(message); err != nil {
 		return fmt.Errorf("failed to store message: %w", err)
 	}
 
@@ -3230,5 +3616,45 @@ func (r *SQLiteRepository) getMigrations() []string {
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (device_id, chat_jid, poll_message_id)
 		)`,
+		// Migration 49 (upstream 45): Anchor on-demand history sync without sorting the whole chat
+		`CREATE INDEX IF NOT EXISTS idx_messages_chat_device_timestamp ON messages(chat_jid, device_id, timestamp)`,
+
+		// Migration 50 (upstream 46): Durable delayed and recurring message sends
+		`CREATE TABLE IF NOT EXISTS scheduled_sends (
+			id VARCHAR(64) PRIMARY KEY,
+			device_id VARCHAR(255) NOT NULL,
+			message_type VARCHAR(32) NOT NULL,
+			payload_json TEXT NOT NULL,
+			assets_json TEXT NOT NULL DEFAULT '{}',
+			phone VARCHAR(255) NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			scheduled_at TIMESTAMP NOT NULL,
+			next_run_at TIMESTAMP NOT NULL,
+			timezone VARCHAR(128) NOT NULL,
+			recurrence VARCHAR(16) NOT NULL DEFAULT 'once',
+			weekdays_json TEXT NOT NULL DEFAULT '[]',
+			day_of_month INTEGER NOT NULL DEFAULT 0,
+			end_at TIMESTAMP NULL,
+			occurrence_limit INTEGER NOT NULL DEFAULT 0,
+			occurrence_count INTEGER NOT NULL DEFAULT 0,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			status VARCHAR(16) NOT NULL DEFAULT 'active',
+			lease_token VARCHAR(64) NOT NULL DEFAULT '',
+			lease_until TIMESTAMP NULL,
+			last_run_at TIMESTAMP NULL,
+			last_message_id VARCHAR(255) NOT NULL DEFAULT '',
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// Migration 51 (upstream 47): Fetch due schedules without scanning the full queue
+		`CREATE INDEX IF NOT EXISTS idx_scheduled_sends_due ON scheduled_sends(status, next_run_at)`,
+
+		// Migration 52 (upstream 48): Device-scoped schedule listing and cleanup
+		`CREATE INDEX IF NOT EXISTS idx_scheduled_sends_device ON scheduled_sends(device_id, status, next_run_at)`,
+
+		// Migration 53 (upstream 49): Persist reply context for live, sent, and history messages.
+		`ALTER TABLE messages ADD COLUMN context_metadata TEXT DEFAULT ''`,
 	}
 }

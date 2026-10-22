@@ -20,4 +20,5 @@ type MessageRequest struct {
 	Mentions          []string `json:"mentions,omitempty" form:"mentions"` // List of phone numbers/JIDs to mention (ghost mentions)
 	ProviderMessageID *string  `json:"provider_message_id,omitempty" form:"provider_message_id"`
 	ProviderTimeoutMS *int     `json:"provider_timeout_ms,omitempty" form:"provider_timeout_ms"`
+	AllowReshare      bool     `json:"allow_reshare,omitempty" form:"allow_reshare"`
 }
