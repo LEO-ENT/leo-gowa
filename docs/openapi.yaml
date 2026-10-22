@@ -3300,6 +3300,10 @@ paths:
       tags:
         - group
       summary: Get list of participants in a group
+      description: >-
+        Returns a fresh group roster. A failed or pending participant addition
+        makes the whole readback unavailable with an existing error response;
+        no partial participant or administrator list is returned.
       parameters:
         - $ref: '#/components/parameters/DeviceIdHeader'
         - name: group_id
@@ -4644,6 +4648,14 @@ components:
       type: object
       additionalProperties: false
       properties:
+        canonical_pn:
+          type: string
+          pattern: '^[0-9]+@s\.whatsapp\.net$'
+          description: >-
+            Optional canonical phone JID from this participant in the same fresh
+            group-info response. Derived only from its canonical phone JID or
+            its server-provided phone-number JID. Omitted when unresolved or
+            inconsistent; never inferred from LID digits or a cached mapping.
         jid:
           type: string
           example: '6289987391723@s.whatsapp.net'

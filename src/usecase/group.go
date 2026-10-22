@@ -184,6 +184,11 @@ func (service serviceGroup) GetGroupParticipants(ctx context.Context, request do
 	if err != nil {
 		return response, err
 	}
+	if groupInfo != nil {
+		if err = validateGroupRosterParticipants(groupInfo.Participants); err != nil {
+			return domainGroup.GetGroupParticipantsResponse{}, err
+		}
+	}
 
 	response.GroupID = groupJID.String()
 	if groupInfo != nil {
@@ -198,6 +203,7 @@ func (service serviceGroup) GetGroupParticipants(ctx context.Context, request do
 
 			participantData := domainGroup.GroupParticipant{
 				JID:          participant.JID.String(),
+				CanonicalPN:  groupParticipantCanonicalPN(participant),
 				PhoneNumber:  groupParticipantPhoneUser(ctx, client, participant),
 				LID:          participant.LID.String(),
 				DisplayName:  displayName,
@@ -535,6 +541,51 @@ func mapKeysToSlice(uniq map[types.JID]struct{}) []types.JID {
 		out = append(out, j)
 	}
 	return out
+}
+
+// validateGroupRosterParticipants refuses the whole fresh readback, including
+// otherwise valid admin entries, if any row describes a failed/pending addition.
+// Merely omitting canonical_pn would let legacy PN rows look like membership.
+func validateGroupRosterParticipants(participants []types.GroupParticipant) error {
+	for _, participant := range participants {
+		if participant.Error != 0 || participant.AddRequest != nil {
+			return pkgError.InternalServerError("Group participants could not be verified")
+		}
+	}
+	return nil
+}
+
+// groupParticipantCanonicalPN is membership evidence from the SAME fresh
+// GetGroupInfo entry. Unlike display-oriented phone helpers, it never consults
+// cached LID mappings or interprets an unresolved LID's user as a phone number.
+func groupParticipantCanonicalPN(p types.GroupParticipant) string {
+	if p.Error != 0 || p.AddRequest != nil {
+		return ""
+	}
+	validUser := func(jid types.JID, server string) bool {
+		if jid.Server != server || jid.User == "" || jid.RawAgent != 0 || jid.Device != 0 || jid.Integrator != 0 {
+			return false
+		}
+		for _, digit := range jid.User {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	if validUser(p.JID, types.DefaultUserServer) {
+		if p.PhoneNumber != (types.JID{}) && p.PhoneNumber != p.JID {
+			return ""
+		}
+		return p.JID.String()
+	}
+	if !validUser(p.JID, types.HiddenUserServer) || !validUser(p.PhoneNumber, types.DefaultUserServer) {
+		return ""
+	}
+	if p.LID != (types.JID{}) && p.LID != p.JID {
+		return ""
+	}
+	return p.PhoneNumber.String()
 }
 
 // groupParticipantPhoneJID is the @s.whatsapp.net (or best-effort) JID for contact / user-info map lookups.
