@@ -55,6 +55,20 @@ func TestDetailedContactsRequiresAnExplicitDevice(t *testing.T) {
 	}
 }
 
+func TestDetailedContactsRejectsAnUnresolvedDevice(t *testing.T) {
+	service := &detailedContactsServiceStub{}
+	app := detailedApp(nil, service)
+	req := httptest.NewRequest(http.MethodGet, "/user/my/contacts/detailed", nil)
+	req.Header.Set(middleware.DeviceIDHeader, "owner-personal")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadRequest || service.calls != 0 {
+		t.Fatalf("status/calls = %d/%d, want 400/0", resp.StatusCode, service.calls)
+	}
+}
+
 func TestDetailedContactsServesTheSelectedDevice(t *testing.T) {
 	service := &detailedContactsServiceStub{}
 	device := whatsapp.NewDeviceInstance("owner-personal", nil, nil)

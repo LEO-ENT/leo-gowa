@@ -159,7 +159,15 @@ func (controller *User) UserMyListContactsDetailed(c fiber.Ctx) error {
 			Message: "detailed contacts require an explicit X-Device-Id",
 		})
 	}
-	ctx := whatsapp.ContextWithDevice(c.Context(), getDeviceFromCtx(c))
+	device := getDeviceFromCtx(c)
+	if device == nil { // never fall back to the global (LEO) client
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  fiber.StatusBadRequest,
+			Code:    "DEVICE_ID_REQUIRED",
+			Message: "detailed contacts require a resolved device",
+		})
+	}
+	ctx := whatsapp.ContextWithDevice(c.Context(), device)
 	response, err := controller.Service.MyListContactsDetailed(ctx)
 	utils.PanicIfNeeded(err)
 
