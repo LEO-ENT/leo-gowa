@@ -1147,6 +1147,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorInternalServer'
+  /user/my/contacts/detailed:
+    get:
+      operationId: userMyContactsDetailed
+      tags:
+        - user
+      summary: Get the selected device's contacts with every contact-store name separate
+      description: |
+        Lists the contact store of the device named by `X-Device-Id` (or `device_id` query).
+        Unlike `/user/my/contacts`, the device is REQUIRED: without it the endpoint answers
+        `400 DEVICE_ID_REQUIRED` and never falls back to the default device.
+        Each name (`full_name`, `first_name`, `push_name`, `business_name`) is returned verbatim
+        in its own field and omitted when blank; `lid` is present only when the device's LID
+        store maps the contact's phone JID. Groups, broadcasts and newsletters are excluded.
+        REST only: webhook payloads never carry address-book names.
+      parameters:
+        - name: X-Device-Id
+          in: header
+          required: true
+          description: |
+            Device identifier (REQUIRED for this endpoint, unlike the shared `DeviceIdHeader`).
+            Can also be provided as `device_id` query parameter.
+          schema:
+            type: string
+            example: 'my-device-id'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyListContactsDetailedResponse'
+        '400':
+          description: Missing explicit device (`code` = `DEVICE_ID_REQUIRED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBadRequest'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorInternalServer'
   /user/check:
     get:
       operationId: userCheck
@@ -5774,6 +5817,51 @@ components:
         name:
           type: string
           example: "Aldino Kemal"
+    MyListContactsDetailedResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          example: "SUCCESS"
+        message:
+          type: string
+          example: "Success get detailed contacts"
+        results:
+          type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/MyListContactsDetailed'
+    MyListContactsDetailed:
+      type: object
+      required:
+        - jid
+      properties:
+        jid:
+          type: string
+          description: Contact-store key as stored (`@s.whatsapp.net` or `@lid`); a PN is never derived from a LID.
+          example: "628123123123123@s.whatsapp.net"
+        lid:
+          type: string
+          description: LID mapped from the phone JID by the device's LID store; omitted when unknown.
+          example: "100000000001@lid"
+        full_name:
+          type: string
+          description: Name saved in the operator's address book; omitted when blank.
+          example: "Aldino Kemal"
+        first_name:
+          type: string
+          description: First name from the address book; omitted when blank.
+          example: "Aldino"
+        push_name:
+          type: string
+          description: The contact's own WhatsApp push name; omitted when blank.
+          example: "Aldino"
+        business_name:
+          type: string
+          description: Verified business name; omitted when blank.
+          example: "Aldino Store"
 
 
     GroupParticipantRequestItem:
