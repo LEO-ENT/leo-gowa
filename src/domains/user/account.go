@@ -73,6 +73,22 @@ type MyListContactsResponseData struct {
 	Name string    `json:"name"`
 }
 
+// MyListContactsDetailedResponse exposes each contact-store name SEPARATELY so a
+// consumer can tell the operator's saved name from the contact's own push name.
+// REST only: webhook payloads never carry address-book names (B1, 88b12a0).
+type MyListContactsDetailedResponse struct {
+	Data []MyListContactsDetailedData `json:"data"`
+}
+
+type MyListContactsDetailedData struct {
+	JID          string `json:"jid"`
+	LID          string `json:"lid,omitempty"`
+	FullName     string `json:"full_name,omitempty"`
+	FirstName    string `json:"first_name,omitempty"`
+	PushName     string `json:"push_name,omitempty"`
+	BusinessName string `json:"business_name,omitempty"`
+}
+
 type ChangePushNameRequest struct {
 	PushName string `json:"push_name" form:"push_name"`
 }
