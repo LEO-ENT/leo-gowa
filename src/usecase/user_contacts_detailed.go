@@ -6,8 +6,28 @@ import (
 	"strings"
 
 	domainUser "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/user"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
+	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
 	"go.mau.fi/whatsmeow/types"
 )
+
+// MyListContactsDetailed reads ONLY the device carried by ctx: an explicit device
+// without a client fails with ErrWaCLI instead of reaching another device's book.
+func (service serviceUser) MyListContactsDetailed(ctx context.Context) (response domainUser.MyListContactsDetailedResponse, err error) {
+	client := whatsapp.ClientFromContext(ctx)
+	if client == nil {
+		return response, pkgError.ErrWaCLI
+	}
+	utils.MustLogin(client)
+
+	rows, err := buildDetailedContacts(ctx, client.Store.Contacts, client.Store.LIDs)
+	if err != nil {
+		return response, err
+	}
+	response.Data = rows
+	return response, nil
+}
 
 // contactLister / pnLIDMapper are the two read paths of the whatsmeow device store
 // this listing needs (store.ContactStore / store.LIDStore satisfy them).

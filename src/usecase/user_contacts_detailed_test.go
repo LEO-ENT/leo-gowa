@@ -7,6 +7,10 @@ import (
 	"testing"
 
 	domainUser "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/user"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
+	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -101,4 +105,28 @@ func TestBuildDetailedContactsPropagatesContactStoreError(t *testing.T) {
 	if _, err := buildDetailedContacts(context.Background(), failingContactLister{}, nil); err == nil {
 		t.Fatal("a contact store failure must not look like an empty address book")
 	}
+}
+
+func TestMyListContactsDetailedNeverFallsBackToTheGlobalClient(t *testing.T) {
+	// G-11: an explicit device without a client must fail, never read another device's book.
+	ctx := whatsapp.ContextWithDevice(context.Background(), whatsapp.NewDeviceInstance("device-a", nil, nil))
+	_, err := serviceUser{}.MyListContactsDetailed(ctx)
+	if !errors.Is(err, pkgError.ErrWaCLI) {
+		t.Fatalf("err = %v, want ErrWaCLI", err)
+	}
+}
+
+func TestMyListContactsDetailedUsesTheClientOfTheExplicitDevice(t *testing.T) {
+	// The explicit device's own (disconnected) client must be the one checked by
+	// MustLogin; any global-client fallback would answer ErrWaCLI instead.
+	accountJID := types.NewJID("628111000009", types.DefaultUserServer)
+	client := &whatsmeow.Client{Store: &store.Device{ID: &accountJID, Contacts: &chatContactStoreStub{}}}
+	ctx := whatsapp.ContextWithDevice(context.Background(), whatsapp.NewDeviceInstance("device-b", client, nil))
+	defer func() {
+		if recovered := recover(); recovered != pkgError.ErrNotConnected {
+			t.Fatalf("recovered = %v, want ErrNotConnected from the device's own client", recovered)
+		}
+	}()
+	_, err := serviceUser{}.MyListContactsDetailed(ctx)
+	t.Fatalf("a disconnected device client must not be listed, got err %v", err)
 }
