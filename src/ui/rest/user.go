@@ -1,9 +1,12 @@
 package rest
 
 import (
+	"strings"
+
 	domainUser "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/user"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/ui/rest/middleware"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -21,6 +24,7 @@ func InitRestUser(app fiber.Router, service domainUser.IUserUsecase) User {
 	app.Get("/user/my/groups", rest.UserMyListGroups)
 	app.Get("/user/my/newsletters", rest.UserMyListNewsletter)
 	app.Get("/user/my/contacts", rest.UserMyListContacts)
+	app.Get("/user/my/contacts/detailed", rest.UserMyListContactsDetailed)
 	app.Get("/user/check", rest.UserCheck)
 	app.Get("/user/business-profile", rest.UserBusinessProfile)
 
@@ -140,6 +144,29 @@ func (controller *User) UserMyListContacts(c fiber.Ctx) error {
 		Status:  200,
 		Code:    "SUCCESS",
 		Message: "Success get list contacts",
+		Results: response,
+	})
+}
+
+// UserMyListContactsDetailed lists the selected device's contact store with every
+// name in its own field. The device must be named explicitly: the compatibility
+// middleware would otherwise answer with the default device's address book.
+func (controller *User) UserMyListContactsDetailed(c fiber.Ctx) error {
+	if strings.TrimSpace(c.Get(middleware.DeviceIDHeader)) == "" && strings.TrimSpace(c.Query("device_id")) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  fiber.StatusBadRequest,
+			Code:    "DEVICE_ID_REQUIRED",
+			Message: "detailed contacts require an explicit X-Device-Id",
+		})
+	}
+	ctx := whatsapp.ContextWithDevice(c.Context(), getDeviceFromCtx(c))
+	response, err := controller.Service.MyListContactsDetailed(ctx)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Success get detailed contacts",
 		Results: response,
 	})
 }
