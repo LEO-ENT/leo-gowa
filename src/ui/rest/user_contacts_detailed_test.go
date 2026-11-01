@@ -82,7 +82,10 @@ func TestDetailedContactsServesTheSelectedDevice(t *testing.T) {
 func TestPlainContactsRouteIsUnchanged(t *testing.T) {
 	// /user/my/contacts keeps its compatibility behaviour (no explicit device required).
 	app := fiber.New()
-	app.Use(func(c fiber.Ctx) error { c.Locals("device", whatsapp.NewDeviceInstance("d", nil, nil)); return c.Next() })
+	app.Use(func(c fiber.Ctx) error {
+		c.Locals("device", whatsapp.NewDeviceInstance("d", nil, nil))
+		return c.Next()
+	})
 	stub := &plainContactsStub{}
 	InitRestUser(app, stub)
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/user/my/contacts", nil))
