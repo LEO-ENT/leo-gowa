@@ -284,3 +284,22 @@ func TestValidateGroupRosterParticipantsRejectsEntireFailedOrPendingRoster(t *te
 		})
 	}
 }
+
+func TestGroupInfoErrorMapsRateOverLimitTo429(t *testing.T) {
+	type statusCoder interface {
+		StatusCode() int
+		ErrCode() string
+	}
+	got := groupInfoError(whatsmeow.ErrIQRateOverLimit)
+	sc, ok := got.(statusCoder)
+	if !ok || sc.StatusCode() != http.StatusTooManyRequests || sc.ErrCode() != "WA_RATE_OVERLIMIT" {
+		t.Fatalf("rate-overlimit must map to 429 WA_RATE_OVERLIMIT, got %#v", got)
+	}
+	other := errors.New("boom")
+	if groupInfoError(other) != other {
+		t.Fatalf("other errors must pass through unchanged")
+	}
+	if groupInfoError(&whatsmeow.IQError{Code: 401, Text: "not-authorized"}) == pkgError.ErrWaRateOverLimit {
+		t.Fatalf("only rate-overlimit maps to 429")
+	}
+}

@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sirupsen/logrus"
@@ -182,7 +183,7 @@ func (service serviceGroup) GetGroupParticipants(ctx context.Context, request do
 
 	groupInfo, err := client.GetGroupInfo(ctx, groupJID)
 	if err != nil {
-		return response, err
+		return response, groupInfoError(err)
 	}
 	if groupInfo != nil {
 		if err = validateGroupRosterParticipants(groupInfo.Participants); err != nil {
@@ -459,7 +460,7 @@ func (service serviceGroup) GroupInfo(ctx context.Context, request domainGroup.G
 	// Fetch group information from WhatsApp
 	groupInfo, err := client.GetGroupInfo(ctx, groupJID)
 	if err != nil {
-		return response, err
+		return response, groupInfoError(err)
 	}
 
 	// Map the response
@@ -657,4 +658,13 @@ func verifiedNameFromUserInfo(info types.UserInfo) string {
 		return info.VerifiedName.Details.GetVerifiedName()
 	}
 	return ""
+}
+
+// groupInfoError keeps WhatsApp's IQ 429 rate-overlimit distinguishable (HTTP 429,
+// WA_RATE_OVERLIMIT) instead of a generic 500, so callers can back off.
+func groupInfoError(err error) error {
+	if errors.Is(err, whatsmeow.ErrIQRateOverLimit) {
+		return pkgError.ErrWaRateOverLimit
+	}
+	return err
 }
