@@ -87,9 +87,29 @@ func (e WaReachoutTimelockError) StatusCode() int {
 	return http.StatusTooManyRequests
 }
 
+// WaRateOverLimitError: WhatsApp refused an info query with IQ 429 rate-overlimit
+// (e.g. GetGroupInfo bursts). Retriable later; callers must back off, never retry hot.
+type WaRateOverLimitError string
+
+// Error for complying the error interface
+func (e WaRateOverLimitError) Error() string {
+	return string(e)
+}
+
+// ErrCode will return the error code based on the error data type
+func (e WaRateOverLimitError) ErrCode() string {
+	return "WA_RATE_OVERLIMIT"
+}
+
+// StatusCode will return the HTTP status code based on the error data type
+func (e WaRateOverLimitError) StatusCode() int {
+	return http.StatusTooManyRequests
+}
+
 const (
 	ErrInvalidJID         = InvalidJID("your JID is invalid")
 	ErrUserNotRegistered  = InvalidJID("user is not registered")
 	ErrWaCLI              = WaCliError("your WhatsApp CLI is invalid or empty")
+	ErrWaRateOverLimit    = WaRateOverLimitError("WhatsApp rate-limited this info query (429 rate-overlimit); back off before retrying")
 	ErrWaReachoutTimelock = WaReachoutTimelockError("WhatsApp rejected this send with error 463 (reach-out timelock). This is WhatsApp's server-side anti-spam restriction on starting new chats and cannot be bypassed by the API. It usually means there is no prior conversation with this recipient, or the sending account is temporarily restricted from reaching new contacts. To get through: ask the recipient to message you first, reply within an already-established conversation, or open and send the chat once from the phone linked to this session, then reduce your sending rate and wait for the restriction to clear. Newly-linked or low-activity numbers are affected most.")
 )
