@@ -6,6 +6,15 @@ on:
     branches:
       - main
       - "leo/**"
+      - "upgrade/**"
+  # The upstream upgrade probe (upstream-upgrade-probe.yml) calls this CI on the branch it
+  # pushed: a push made with GITHUB_TOKEN does not trigger the push/pull_request events.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Ref to check out (the probe's upgrade/<tag> branch)"
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -22,6 +31,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -59,6 +70,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
