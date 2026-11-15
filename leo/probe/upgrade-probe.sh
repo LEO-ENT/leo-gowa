@@ -7,15 +7,18 @@
 #    queue = the non-merge commits of $MAIN_REF not reachable from the REAL base tag
 #    (leo/BASE_TAG on $MAIN_REF; the override only moves NEW, never the queue);
 #    - first conflict: abort that pick, keep the picks done so far, record the sha and
-#      the conflicted files -> status=conflict (draft PR "upgrade/$NEW (CONFLICT)");
-#    - no conflict: leo/BASE_TAG := $NEW -> status=clean (PR "upgrade/$NEW");
-# 3. idempotent: an existing remote branch or PR upgrade/$NEW -> status=exists, no push.
+#      the conflicted files -> status=conflict;
+#    - no conflict: leo/BASE_TAG := $NEW -> status=clean;
+# 3. push upgrade/$NEW. Idempotent: when the remote branch already exists it is NEVER
+#    overwritten (existed=true): the queue is replayed locally only, to recompute the
+#    verdict. The verdict itself goes to an issue (leo/probe/issue-verdict.sh): GitHub
+#    Actions may not open PRs in the LEO-ENT organisation.
 #
 # Env: UPSTREAM_URL, MAIN_REF (default origin/main), BASE_OVERRIDE (optional),
-#      PUSH=1 to push + open the PR (CI), else local only (simulation),
-#      REPO (owner/name, for gh), GITHUB_OUTPUT / GITHUB_STEP_SUMMARY (optional).
-# Outputs (key=value): status, new_tag, base_tag, real_base_tag, branch, picked,
-#      empty_picks, conflict_sha, conflict_files, pr_number, pr_url.
+#      PUSH=1 to push (CI), else local only (simulation),
+#      GITHUB_OUTPUT / GITHUB_STEP_SUMMARY (optional).
+# Outputs: status, new_tag, base_tag, real_base_tag, branch, existed, main_sha, queue_len,
+#      picked, empty_picks, conflict_sha, conflict_files, queue_md (multi-line Markdown).
 set -euo pipefail
 
 UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/aldinokemal/go-whatsapp-web-multidevice.git}"
@@ -55,22 +58,18 @@ out new_tag "$NEW"
 out branch "$BRANCH"
 echo "base=$BASE real_base=$REAL_BASE new=$NEW branch=$BRANCH"
 
-if [[ "$PUSH" == "1" ]]; then
-  if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-    existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number,url,state \
-      --jq '.[0] | select(.) | "\(.number) \(.url) \(.state)"')"
-    echo "branch $BRANCH already exists (pr: ${existing:-none}): not duplicating"
-    out status exists
-    out pr_number "$(cut -d' ' -f1 <<<"$existing")"
-    out pr_url "$(cut -d' ' -f2 <<<"$existing")"
-    summary "\`$BRANCH\` already exists (PR: ${existing:-none}). Delete the branch to re-probe."
-    exit 0
-  fi
+existed=false
+if [[ "$PUSH" == "1" ]] && git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+  existed=true
+  echo "branch $BRANCH already exists: not overwritten, verdict recomputed locally"
 fi
+out existed "$existed"
+out main_sha "$(git rev-parse "$MAIN_REF^{commit}")"
 
 mapfile -t QUEUE < <(git rev-list --reverse --no-merges "$MAIN_REF" --not "refs/tags/$REAL_BASE")
 [[ ${#QUEUE[@]} -gt 0 ]] || die "empty LEO queue: $MAIN_REF has no commit above $REAL_BASE"
 echo "queue: ${#QUEUE[@]} commits ($REAL_BASE..$MAIN_REF)"
+out queue_len "${#QUEUE[@]}"
 
 git checkout --quiet -B "$BRANCH" "refs/tags/$NEW^{commit}"
 picked=0
@@ -115,39 +114,38 @@ fi
 out status "$status"
 echo "status=$status picked=$picked/${#QUEUE[@]} empty=${empty[*]:-} conflict=${conflict_sha:-} files=${conflict_files:-}"
 
-body="$WORK/pr-body.md"
+md="$WORK/queue.md"
 {
-  echo "Automatic upstream upgrade probe (GOWA PLAN F6-T2). **Do not merge without the GoWA train (manual).**"
-  echo
-  echo "- upstream tag: \`$NEW\` (base \`$BASE\`; queue base \`$REAL_BASE\`)"
-  echo "- LEO queue: ${#QUEUE[@]} commits from \`$MAIN_REF\`, picked $picked with \`cherry-pick -x\`"
+  echo "- LEO queue: ${#QUEUE[@]} commits of \`$MAIN_REF\` (\`$(git rev-parse --short "$MAIN_REF^{commit}")\`) above \`$REAL_BASE\`, picked $picked with \`cherry-pick -x\`"
   if [[ ${#empty[@]} -gt 0 ]]; then
     echo "- picks left empty on \`$NEW\` (DROP candidates for \`leo/PATCHES.md\`): ${empty[*]}"
   fi
   if [[ "$status" == conflict ]]; then
-    echo
-    echo "## CONFLICT"
-    echo "The pick of \`$conflict_sha\` (\`$(git log -1 --format=%s "$conflict_sha")\`) conflicts on:"
+    echo "- **CONFLICT** on the pick of \`$conflict_sha\` (\`$(git log -1 --format=%s "$conflict_sha")\`), files:"
     # shellcheck disable=SC2016  # literal Markdown backticks
-    tr ',' '\n' <<<"$conflict_files" | sed 's/^/- `/; s/$/`/'
-    echo
-    echo "This branch holds the $picked picks that applied. Not picked yet:"
+    tr ',' '
+' <<<"$conflict_files" | sed 's/^/  - `/; s/$/`/'
+    echo "- the branch holds the $picked picks that applied; not picked yet:"
     started=0
     for sha in "${QUEUE[@]}"; do
       [[ "$sha" == "$conflict_sha" ]] && started=1
-      [[ $started == 1 ]] && echo "- \`${sha:0:7}\` $(git log -1 --format=%s "$sha")"
+      [[ $started == 1 ]] && echo "  - \`${sha:0:7}\` $(git log -1 --format=%s "$sha")"
     done
   else
-    echo "- \`leo/BASE_TAG\` = \`$NEW\`"
-    echo
-    echo "Verdict: the fork CI (gofmt, verify cgo/purego, Provider, LEO golden envelopes) and the"
-    echo "\`oasdiff\` job of the probe run, filtered on \`leo/orch-endpoints.txt\`."
+    echo "- clean: \`leo/BASE_TAG\` = \`$NEW\` on the branch"
   fi
-} >"$body"
-cat "$body"
+} >"$md"
+cat "$md"
+delim="QUEUE_MD_$(od -An -N8 -tx1 /dev/urandom | tr -d ' 
+')"
+{ echo "queue_md<<$delim"; cat "$md"; echo "$delim"; } >>"$OUT"
 
 if [[ "$PUSH" != "1" ]]; then
   echo "PUSH!=1: local simulation, nothing pushed"
+  exit 0
+fi
+if [[ "$existed" == true ]]; then
+  summary "\`$BRANCH\` already existed: not overwritten; verdict recomputed ($status). Delete the branch to re-push."
   exit 0
 fi
 
@@ -158,21 +156,4 @@ if ! git push --quiet origin "refs/heads/$BRANCH:refs/heads/$BRANCH" 2>"$WORK/pu
   fi
   die "push of $BRANCH failed"
 fi
-
-title="$BRANCH"
-draft=()
-if [[ "$status" == conflict ]]; then
-  title="$BRANCH (CONFLICT)"
-  draft=(--draft)
-fi
-if ! url="$(gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "$title" \
-  --body-file "$body" "${draft[@]}" 2>"$WORK/pr.err")"; then
-  cat "$WORK/pr.err" >&2
-  if grep -qi "not permitted to create or approve pull requests" "$WORK/pr.err"; then
-    die "branch $BRANCH pushed, PR refused: enable 'Allow GitHub Actions to create and approve pull requests' (Settings > Actions > General)"
-  fi
-  die "branch $BRANCH pushed, PR creation failed"
-fi
-out pr_url "$url"
-out pr_number "${url##*/}"
-summary "Opened $url ($status)."
+summary "Pushed \`$BRANCH\` ($status)."
