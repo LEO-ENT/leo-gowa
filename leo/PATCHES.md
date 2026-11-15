@@ -54,7 +54,7 @@ Legend: **KEEP** = LEO patch carried on the tag · **DROP** = covered by upstrea
 | 32dd744 | test(leo): golden webhook envelopes consumed by leo-orchestrator | F3-T5, see `leo/ENVELOPE_FIELDS.md` |
 | (this) | test(leo): open usecase test DB with the build-selected sqlite driver | upstream v9.9.0 `usecase/message_test.go` hardcodes `sqlite3`: 27 purego failures on the pristine tag; UPSTREAMABLE |
 | (ci) | ci(leo): run fork CI on the Go version required by v9.9.0 | `src/go.mod` = go 1.26.0 |
-| (alert) | fix(webhook): device alerts fall back to the global webhook | decision of Frisco 2026-11-15, see below |
+| c3bda68 | fix(webhook): device alerts fall back to the global webhook | decision of Frisco 2026-11-15, see below |
 
 ## Rebase notes (conflict resolutions)
 
