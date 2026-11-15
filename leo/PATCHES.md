@@ -52,6 +52,8 @@ Legend: **KEEP** = LEO patch carried on the tag · **DROP** = covered by upstrea
 | 6957ed8 | test(leo): keep poll webhook contract on upstream implementation | poll golden (4 fixtures, byte-identical to the fork) green on upstream #816 -> poll group DROP |
 | 86fa58d | test(leo): pin orchestrator calls without Origin through the v9.9 origin guard | v9.9 BrowserOriginGuard (#924) must let httpx calls (no Origin) through |
 | 32dd744 | test(leo): golden webhook envelopes consumed by leo-orchestrator | F3-T5, see `leo/ENVELOPE_FIELDS.md` |
+| (this) | test(leo): open usecase test DB with the build-selected sqlite driver | upstream v9.9.0 `usecase/message_test.go` hardcodes `sqlite3`: 27 purego failures on the pristine tag; UPSTREAMABLE |
+| (ci) | ci(leo): run fork CI on the Go version required by v9.9.0 | `src/go.mod` = go 1.26.0 |
 
 ## Rebase notes (conflict resolutions)
 

@@ -11,7 +11,7 @@ import (
 	domainMessage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/message"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/chatstorage"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mau.fi/whatsmeow"
@@ -304,7 +304,7 @@ func TestMessageActionsKeepStoredMessageWhenWhatsAppFails(t *testing.T) {
 func newMessageActionTestService(t *testing.T, remoteErr error) (serviceMessage, domainChatStorage.IChatStorageRepository, context.Context) {
 	t.Helper()
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open(sqlite.DriverName, ":memory:")
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
