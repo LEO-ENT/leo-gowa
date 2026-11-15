@@ -1,0 +1,12 @@
+{
+  "device_id": "393330000001@s.whatsapp.net",
+  "event": "device.temporary_ban",
+  "payload": {
+    "code": 102,
+    "expires_at": "2026-11-15T11:00:00Z",
+    "expires_in_seconds": 3600,
+    "reason": "too many people blocked you"
+  },
+  "session_id": "leo-session",
+  "timestamp": "2026-11-15T16:10:13Z"
+}

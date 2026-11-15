@@ -1,0 +1,17 @@
+{
+  "device_id": "393330000001@s.whatsapp.net",
+  "event": "message",
+  "payload": {
+    "body": "Scontrino",
+    "chat_id": "393330000002@s.whatsapp.net",
+    "from": "393330000002@s.whatsapp.net",
+    "id": "LEO-IMAGE-1",
+    "image": {
+      "caption": "Scontrino",
+      "url": ""
+    },
+    "is_from_me": false,
+    "timestamp": "2026-11-15T10:00:00Z"
+  },
+  "session_id": "leo-session"
+}

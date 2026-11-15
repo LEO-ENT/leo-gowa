@@ -1,0 +1,11 @@
+{
+  "device_id": "393330000001@s.whatsapp.net",
+  "event": "device.reachout_timelock",
+  "payload": {
+    "ends_at": "2026-11-16T10:00:00Z",
+    "enforcement_type": "REACHOUT_TIMELOCK",
+    "is_active": true
+  },
+  "session_id": "leo-session",
+  "timestamp": "2026-11-15T16:10:13Z"
+}

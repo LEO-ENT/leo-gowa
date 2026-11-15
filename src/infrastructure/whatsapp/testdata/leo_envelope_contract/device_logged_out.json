@@ -1,0 +1,11 @@
+{
+  "device_id": "393330000001@s.whatsapp.net",
+  "event": "device.logged_out",
+  "payload": {
+    "code": 401,
+    "on_connect": true,
+    "reason": "logged out from another device"
+  },
+  "session_id": "leo-session",
+  "timestamp": "2026-11-15T16:10:13Z"
+}

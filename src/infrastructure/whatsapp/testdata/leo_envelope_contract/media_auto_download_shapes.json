@@ -1,0 +1,12 @@
+{
+  "document_with_caption": {
+    "caption": "Preventivo",
+    "filename": "preventivo.pdf",
+    "path": "statics/media/1731664800-abc.pdf"
+  },
+  "image_with_caption": {
+    "caption": "Preventivo",
+    "path": "statics/media/1731664800-abc.pdf"
+  },
+  "image_without_caption": "statics/media/1731664800-abc.jpg"
+}

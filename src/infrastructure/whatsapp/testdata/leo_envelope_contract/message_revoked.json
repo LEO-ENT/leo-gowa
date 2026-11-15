@@ -1,0 +1,15 @@
+{
+  "device_id": "393330000001@s.whatsapp.net",
+  "event": "message.revoked",
+  "payload": {
+    "chat_id": "120363000000000001@g.us",
+    "from": "393330000003@s.whatsapp.net",
+    "id": "LEO-REVOKE-1",
+    "is_from_me": false,
+    "revoked_chat": "120363000000000001@g.us",
+    "revoked_from_me": false,
+    "revoked_message_id": "LEO-GROUP-ORIGINAL-1",
+    "timestamp": "2026-11-15T10:00:00Z"
+  },
+  "session_id": "leo-session"
+}

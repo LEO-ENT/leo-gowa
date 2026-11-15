@@ -1,0 +1,19 @@
+{
+  "device_id": "393330000001@s.whatsapp.net",
+  "event": "message",
+  "payload": {
+    "chat_id": "393330000002@s.whatsapp.net",
+    "document": {
+      "filename": "preventivo.pdf",
+      "url": ""
+    },
+    "from": "393330000002@s.whatsapp.net",
+    "id": "LEO-DOCUMENT-1",
+    "is_from_me": false,
+    "media_info": {
+      "file_name": "preventivo.pdf"
+    },
+    "timestamp": "2026-11-15T10:00:00Z"
+  },
+  "session_id": "leo-session"
+}

@@ -1,0 +1,13 @@
+{
+  "device_id": "393330000001@s.whatsapp.net",
+  "event": "message",
+  "payload": {
+    "body": "Ciao LEO",
+    "chat_id": "393330000002@s.whatsapp.net",
+    "from": "393330000002@s.whatsapp.net",
+    "id": "LEO-DM-TEXT-1",
+    "is_from_me": false,
+    "timestamp": "2026-11-15T10:00:00Z"
+  },
+  "session_id": "leo-session"
+}
