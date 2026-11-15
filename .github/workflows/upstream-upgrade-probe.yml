@@ -1,0 +1,142 @@
+# Weekly upstream upgrade probe (GOWA PLAN F6-T2). It never touches prod: a new upstream
+# tag becomes a PR upgrade/<tag> with a verdict (fork CI + oasdiff on the endpoints orch
+# uses), or a draft PR "upgrade/<tag> (CONFLICT)" naming the patch and files that conflict.
+# Going to prod stays the MANUAL GoWA train (leo-infra deploy/train/gowa/README.md).
+name: Upstream upgrade probe
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      base_tag:
+        description: "Test only: pretend the queue sits on this upstream tag (e.g. v9.8.0)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-upgrade-probe
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/aldinokemal/go-whatsapp-web-multidevice.git
+  OASDIFF_VERSION: "1.35.0"
+  OASDIFF_SHA256: a8023002fcb2eaa7f5758148a9303cb63d33b939886df312268bc0fc7b939140
+
+jobs:
+  probe:
+    name: cherry-pick the LEO queue on the new tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      status: ${{ steps.probe.outputs.status }}
+      new_tag: ${{ steps.probe.outputs.new_tag }}
+      base_tag: ${{ steps.probe.outputs.base_tag }}
+      branch: ${{ steps.probe.outputs.branch }}
+      pr_number: ${{ steps.probe.outputs.pr_number }}
+    steps:
+      - name: Check out main (full history)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Probe
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_OVERRIDE: ${{ inputs.base_tag }}
+          MAIN_REF: origin/main
+          PUSH: "1"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898729+github-actions[bot]@users.noreply.github.com"
+          # The script leaves main: run a copy kept outside the work tree.
+          cp leo/probe/upgrade-probe.sh "$RUNNER_TEMP/upgrade-probe.sh"
+          bash "$RUNNER_TEMP/upgrade-probe.sh"
+
+  oasdiff:
+    name: oasdiff on the endpoints orch uses
+    needs: probe
+    if: needs.probe.outputs.new_tag != '' && needs.probe.outputs.status != 'exists'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+
+      - name: Install oasdiff (pinned, checksum verified)
+        run: |
+          tarball="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/${tarball}"
+          echo "${OASDIFF_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/oasdiff"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/oasdiff" oasdiff
+          "$RUNNER_TEMP/oasdiff/oasdiff" --version
+
+      - name: Breaking changes between the upstream tags
+        env:
+          BASE: ${{ needs.probe.outputs.base_tag }}
+          NEW: ${{ needs.probe.outputs.new_tag }}
+        run: |
+          git fetch --quiet --force --depth=1 "$UPSTREAM_URL" \
+            "refs/tags/$BASE:refs/tags/$BASE" "refs/tags/$NEW:refs/tags/$NEW"
+          git show "$BASE:docs/openapi.yaml" > "$RUNNER_TEMP/base.yaml"
+          git show "$NEW:docs/openapi.yaml" > "$RUNNER_TEMP/new.yaml"
+          "$RUNNER_TEMP/oasdiff/oasdiff" breaking "$RUNNER_TEMP/base.yaml" "$RUNNER_TEMP/new.yaml" \
+            --format json > "$RUNNER_TEMP/breaking.json"
+          set +e
+          python3 leo/probe/oasdiff_used.py "$RUNNER_TEMP/breaking.json" leo/orch-endpoints.txt \
+            > "$RUNNER_TEMP/oasdiff.md"
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/oasdiff.md"
+          { echo "## oasdiff \`$BASE\` -> \`$NEW\`"; echo; cat "$RUNNER_TEMP/oasdiff.md"; } >> "$GITHUB_STEP_SUMMARY"
+          if [[ $rc -ne 0 ]]; then
+            echo "::error title=oasdiff::breaking change on an endpoint orch uses ($BASE -> $NEW), see the job summary"
+          fi
+          exit $rc
+
+  ci:
+    name: fork CI on the upgrade branch
+    needs: probe
+    if: needs.probe.outputs.status == 'clean'
+    uses: ./.github/workflows/ci.yaml
+    with:
+      ref: ${{ needs.probe.outputs.branch }}
+
+  verdict:
+    name: verdict on the PR
+    needs: [probe, oasdiff, ci]
+    if: always() && needs.probe.outputs.pr_number != '' && needs.probe.outputs.status != 'exists'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment the verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ needs.probe.outputs.pr_number }}
+          STATUS: ${{ needs.probe.outputs.status }}
+          OASDIFF: ${{ needs.oasdiff.result }}
+          CI: ${{ needs.ci.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ "$STATUS" == clean && "$OASDIFF" == success && "$CI" == success ]]; then
+            verdict="GREEN"
+          else
+            verdict="RED"
+          fi
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+            "Probe verdict: **$verdict** (queue: \`$STATUS\`, fork CI: \`$CI\`, oasdiff: \`$OASDIFF\`). Details: $RUN_URL"
