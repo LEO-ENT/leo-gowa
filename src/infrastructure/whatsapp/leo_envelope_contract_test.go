@@ -172,7 +172,7 @@ func TestLeoEnvelopeContract(t *testing.T) {
 					Timestamp: leoFixedClock,
 					Join:      []types.JID{leoMemberJID},
 				}, leoDeviceJID.String(), nil))
-				return recvWebhook(t, got).body
+				return leoRecvEnvelope(t, got, "group.participants")
 			},
 		},
 		{
@@ -265,7 +265,7 @@ func leoForwardMessage(t *testing.T, dbName string, evt *events.Message) map[str
 	got := leoCaptureWebhooks(t)
 	client := newPollCryptoClient(t, "leo-envelope-"+dbName, leoDeviceJID)
 	require.NoError(t, forwardMessageToWebhook(context.Background(), client, evt))
-	return recvWebhook(t, got).body
+	return leoRecvEnvelope(t, got, "")
 }
 
 func leoForwardDevice(t *testing.T, eventName string, payload map[string]any) map[string]any {
@@ -273,7 +273,31 @@ func leoForwardDevice(t *testing.T, eventName string, payload map[string]any) ma
 	got := leoCaptureWebhooks(t)
 	inst := &DeviceInstance{id: leoSessionID, jid: leoDeviceJID.String(), createdAt: leoFixedClock}
 	forwardDeviceEvent(context.Background(), eventName, inst, payload)
-	return recvWebhook(t, got).body
+	return leoRecvEnvelope(t, got, eventName)
+}
+
+// leoRecvEnvelope returns the first delivery for the LEO test device (and, when
+// event is set, for that event). The submit stub is package-global, so a late
+// asynchronous delivery from another test may land on the same channel: it is
+// skipped instead of being compared with the golden.
+func leoRecvEnvelope(t *testing.T, got <-chan deliveredWebhook, event string) map[string]any {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case delivered := <-got:
+			if delivered.body["device_id"] != leoDeviceJID.String() {
+				continue
+			}
+			if event != "" && delivered.body["event"] != event {
+				continue
+			}
+			return delivered.body
+		case <-deadline:
+			t.Fatal("timed out waiting for the LEO envelope")
+			return nil
+		}
+	}
 }
 
 func leoAssertGolden(t *testing.T, fixture string, value any) {
