@@ -1,6 +1,8 @@
 # Weekly upstream upgrade probe (GOWA PLAN F6-T2). It never touches prod: a new upstream
-# tag becomes a PR upgrade/<tag> with a verdict (fork CI + oasdiff on the endpoints orch
-# uses), or a draft PR "upgrade/<tag> (CONFLICT)" naming the patch and files that conflict.
+# tag becomes a branch upgrade/<tag> (the LEO queue cherry-picked on it) and ONE issue
+# "upgrade/<tag>: GREEN|RED (...)" with the verdict (cherry-pick, fork CI, oasdiff on the
+# endpoints orch uses) and a one-click compare link to open the PR. GitHub Actions may not
+# open PRs in the LEO-ENT organisation (org policy), hence the issue.
 # Going to prod stays the MANUAL GoWA train (leo-infra deploy/train/gowa/README.md).
 name: Upstream upgrade probe
 
@@ -33,13 +35,14 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-      pull-requests: write
     outputs:
       status: ${{ steps.probe.outputs.status }}
       new_tag: ${{ steps.probe.outputs.new_tag }}
       base_tag: ${{ steps.probe.outputs.base_tag }}
       branch: ${{ steps.probe.outputs.branch }}
-      pr_number: ${{ steps.probe.outputs.pr_number }}
+      existed: ${{ steps.probe.outputs.existed }}
+      main_sha: ${{ steps.probe.outputs.main_sha }}
+      queue_md: ${{ steps.probe.outputs.queue_md }}
     steps:
       - name: Check out main (full history)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -50,8 +53,6 @@ jobs:
       - name: Probe
         id: probe
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           BASE_OVERRIDE: ${{ inputs.base_tag }}
           MAIN_REF: origin/main
           PUSH: "1"
@@ -65,9 +66,11 @@ jobs:
   oasdiff:
     name: oasdiff on the endpoints orch uses
     needs: probe
-    if: needs.probe.outputs.new_tag != '' && needs.probe.outputs.status != 'exists'
+    if: needs.probe.outputs.new_tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      report: ${{ steps.diff.outputs.report }}
     steps:
       - name: Check out main
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -85,6 +88,7 @@ jobs:
           "$RUNNER_TEMP/oasdiff/oasdiff" --version
 
       - name: Breaking changes between the upstream tags
+        id: diff
         env:
           BASE: ${{ needs.probe.outputs.base_tag }}
           NEW: ${{ needs.probe.outputs.new_tag }}
@@ -102,10 +106,18 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/oasdiff.md"
           { echo "## oasdiff \`$BASE\` -> \`$NEW\`"; echo; cat "$RUNNER_TEMP/oasdiff.md"; } >> "$GITHUB_STEP_SUMMARY"
-          if [[ $rc -ne 0 ]]; then
-            echo "::error title=oasdiff::breaking change on an endpoint orch uses ($BASE -> $NEW), see the job summary"
+          delim="OASDIFF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+          { echo "report<<$delim"; cat "$RUNNER_TEMP/oasdiff.md"; echo "$delim"; } >> "$GITHUB_OUTPUT"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Gate
+        env:
+          RC: ${{ steps.diff.outputs.rc }}
+        run: |
+          if [[ "$RC" != 0 ]]; then
+            echo "::error title=oasdiff::breaking change on an endpoint orch uses, see the job summary"
+            exit 1
           fi
-          exit $rc
 
   ci:
     name: fork CI on the upgrade branch
@@ -116,27 +128,36 @@ jobs:
       ref: ${{ needs.probe.outputs.branch }}
 
   verdict:
-    name: verdict on the PR
+    name: verdict issue
     needs: [probe, oasdiff, ci]
-    if: always() && needs.probe.outputs.pr_number != '' && needs.probe.outputs.status != 'exists'
+    if: always() && needs.probe.outputs.new_tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      pull-requests: write
+      contents: read
+      issues: write
     steps:
-      - name: Comment the verdict
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          sparse-checkout: leo/probe
+
+      - name: Open or update the verdict issue
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ needs.probe.outputs.pr_number }}
-          STATUS: ${{ needs.probe.outputs.status }}
-          OASDIFF: ${{ needs.oasdiff.result }}
-          CI: ${{ needs.ci.result }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          if [[ "$STATUS" == clean && "$OASDIFF" == success && "$CI" == success ]]; then
-            verdict="GREEN"
-          else
-            verdict="RED"
-          fi
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
-            "Probe verdict: **$verdict** (queue: \`$STATUS\`, fork CI: \`$CI\`, oasdiff: \`$OASDIFF\`). Details: $RUN_URL"
+          NEW: ${{ needs.probe.outputs.new_tag }}
+          BASE: ${{ needs.probe.outputs.base_tag }}
+          BRANCH: ${{ needs.probe.outputs.branch }}
+          MAIN_SHA: ${{ needs.probe.outputs.main_sha }}
+          STATUS: ${{ needs.probe.outputs.status }}
+          EXISTED: ${{ needs.probe.outputs.existed }}
+          QUEUE_MD: ${{ needs.probe.outputs.queue_md }}
+          PROBE_RESULT: ${{ needs.probe.result }}
+          CI_RESULT: ${{ needs.ci.result }}
+          OASDIFF_RESULT: ${{ needs.oasdiff.result }}
+          OASDIFF_MD: ${{ needs.oasdiff.outputs.report }}
+        run: bash leo/probe/issue-verdict.sh
