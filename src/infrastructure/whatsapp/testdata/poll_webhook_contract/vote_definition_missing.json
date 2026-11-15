@@ -1,0 +1,21 @@
+{
+  "device_id": "628222@s.whatsapp.net",
+  "event": "message",
+  "payload": {
+    "body": "Poll vote: POLL-CONTRACT-1 (definition missing)",
+    "chat_id": "120363000000@g.us",
+    "from": "628222@s.whatsapp.net",
+    "id": "VOTE-CONTRACT-C",
+    "is_from_me": true,
+    "poll": {
+      "type": "vote",
+      "poll_id": "POLL-CONTRACT-1",
+      "selected_options": [],
+      "selected_option_hashes": [
+        "4bea2907905d25f44ef600d86d7df142b5b89a221c99ed7bd8a86b6b87b6b0d1"
+      ],
+      "resolution_status": "definition_missing"
+    },
+    "timestamp": "2026-10-10T12:00:00Z"
+  }
+}

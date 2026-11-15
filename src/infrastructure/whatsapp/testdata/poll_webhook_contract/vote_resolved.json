@@ -1,0 +1,36 @@
+{
+  "device_id": "628222@s.whatsapp.net",
+  "event": "message",
+  "payload": {
+    "body": "Poll vote: Accetto",
+    "chat_id": "120363000000@g.us",
+    "from": "628222@s.whatsapp.net",
+    "id": "VOTE-CONTRACT-A",
+    "is_from_me": true,
+    "poll": {
+      "type": "vote",
+      "poll_id": "POLL-CONTRACT-1",
+      "question": "Condizioni di servizio",
+      "options": [
+        {
+          "name": "Accetto",
+          "hash": "4bea2907905d25f44ef600d86d7df142b5b89a221c99ed7bd8a86b6b87b6b0d1"
+        },
+        {
+          "name": "Rifiuto",
+          "hash": "7f6d817f886e9bcb55ebd7aaedb7568632f5cca4296fa19e121795d17d8abc3b"
+        }
+      ],
+      "selectable_options_count": 1,
+      "version": "v1",
+      "selected_options": [
+        "Accetto"
+      ],
+      "selected_option_hashes": [
+        "4bea2907905d25f44ef600d86d7df142b5b89a221c99ed7bd8a86b6b87b6b0d1"
+      ],
+      "resolution_status": "resolved"
+    },
+    "timestamp": "2026-10-10T12:00:00Z"
+  }
+}
