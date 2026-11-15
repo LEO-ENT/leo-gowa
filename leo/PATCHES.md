@@ -54,6 +54,7 @@ Legend: **KEEP** = LEO patch carried on the tag · **DROP** = covered by upstrea
 | 32dd744 | test(leo): golden webhook envelopes consumed by leo-orchestrator | F3-T5, see `leo/ENVELOPE_FIELDS.md` |
 | (this) | test(leo): open usecase test DB with the build-selected sqlite driver | upstream v9.9.0 `usecase/message_test.go` hardcodes `sqlite3`: 27 purego failures on the pristine tag; UPSTREAMABLE |
 | (ci) | ci(leo): run fork CI on the Go version required by v9.9.0 | `src/go.mod` = go 1.26.0 |
+| (alert) | fix(webhook): device alerts fall back to the global webhook | decision of Frisco 2026-11-15, see below |
 
 ## Rebase notes (conflict resolutions)
 
@@ -85,3 +86,15 @@ Rule: LEO semantics on upstream structure; when upstream has an equivalent funct
 | 48-58 | upstream 44-54 ("Migration N (upstream M)") |
 
 Prod is at 53 (= upstream 49 on the v9.6 fork); v9.9 adds upstream 50-54 at 54-58. To be validated on a prod DB copy in F4 (TEST.sh RUN1/RUN3).
+
+## Decision 2026-11-15: device alerts are the only exception to fail-closed
+
+Patch 86345a6 suppresses every generic webhook leg when the per-device webhook config cannot be
+resolved (lookup error, 1s timeout, invalid URL). Decision of Frisco: `device.logged_out`,
+`device.temporary_ban` and `device.reachout_timelock` instead go to the global `WHATSAPP_WEBHOOK`
+(global secret and HMAC signature, global event whitelist), in legacy and managed mode alike, so
+a ban/logout alert is never lost. Every other event stays fail-closed. Implemented in
+`forwardDeviceAlertToGlobalWebhook` (`webhook_forward.go`) with a structured warn
+(`event`, `reason=device_webhook_config_unavailable`, `targets` count; no JID, URL or secret).
+Upstream test `TestDeviceEventSQLBlockedLookupDoesNotHoldLogout` is back to its upstream
+assertion (global fallback). Tests: `device_alert_fallback_test.go`.

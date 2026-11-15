@@ -189,7 +189,7 @@ release notes and `GET /app/info` when using a pinned binary or container tag.
   - When a device has a custom webhook, events for that device are sent to the device-specific URL.
   - When no device webhook is set, events fall back to the global webhook (`--webhook`).
   - Set `webhook_url` to an empty string with `PATCH` to clear it and use the global webhook.
-  - LEO: enable `--webhook-device-fail-closed=true` or `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED=true` only with the managed per-device keyring/codec installed. This selects the encrypted durable source spool and suppresses every global/direct fallback; `/health` remains `503` if the codec or worker is unavailable.
+  - LEO: enable `--webhook-device-fail-closed=true` or `WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED=true` only with the managed per-device keyring/codec installed. This selects the encrypted durable source spool and suppresses every global/direct fallback; `/health` remains `503` if the codec or worker is unavailable. Single exception (LEO, all modes): when the per-device webhook config cannot be resolved, the `device.logged_out`, `device.temporary_ban` and `device.reachout_timelock` alerts are delivered to the global `WHATSAPP_WEBHOOK` (global secret, global event filter); every other event stays fail-closed.
   - LEO: a storage lookup failure or an invalid device webhook URL always fails closed and never falls back globally, regardless of the compatibility gate.
   - LEO: webhook secrets are write-only: create/update/get responses expose only `webhook_secret_configured`, never the stored secret.
   - Set `WHATSAPP_WEBHOOK_DEVICE_MERGE_GLOBAL=true` (or `--webhook-device-merge-global=true`) to make a

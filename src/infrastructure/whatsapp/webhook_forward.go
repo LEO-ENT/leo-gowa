@@ -197,12 +197,47 @@ func forwardPayloadWithWebhookConfig(ctx context.Context, payload map[string]any
 	return forwardPayloadWithResolvedWebhookConfig(ctx, payload, eventName, webhookConfig, nil)
 }
 
+// isDeviceAlertEvent reports the account-health events (ban, logout, reachout
+// timelock) that LEO must never lose: they are the only exception to the
+// fail-closed policy below.
+func isDeviceAlertEvent(eventName string) bool {
+	switch eventName {
+	case EventTypeDeviceLoggedOut, EventTypeDeviceTemporaryBan, EventTypeDeviceReachoutTimelock:
+		return true
+	}
+	return false
+}
+
+// forwardDeviceAlertToGlobalWebhook is the LEO exception to fail-closed routing
+// (decision 2026-11-15): when the per-device webhook config cannot be resolved,
+// a device.* alert goes to the global webhook (global secret and HMAC signature,
+// global event whitelist) instead of being dropped. The event carries no chat
+// content. Without a global webhook the resolve error is returned unchanged.
+func forwardDeviceAlertToGlobalWebhook(ctx context.Context, payload map[string]any, eventName string, resolveErr error) error {
+	if len(config.WhatsappWebhook) == 0 || !isEventWhitelistedForDevice(eventName, nil) || shouldIgnoreWebhookJID(payload) {
+		logrus.WithFields(logrus.Fields{"event": eventName, "reason": "device_webhook_config_unavailable"}).
+			Warn("Device alert not delivered: device webhook config unavailable and no eligible global webhook")
+		return resolveErr
+	}
+	logrus.WithFields(logrus.Fields{
+		"event":   eventName,
+		"reason":  "device_webhook_config_unavailable",
+		"targets": len(config.WhatsappWebhook),
+	}).Warn("Device alert delivered via global webhook fallback")
+	addWebhookSessionID(payload)
+	return forwardToWebhooks(ctx, payload, eventName, config.WhatsappWebhook, nil)
+}
+
 // forwardPayloadWithResolvedWebhookConfig delivers with an already resolved device config.
 // LEO fail-closed policy: a non-nil resolveErr (lookup or validation failure) suppresses
 // every generic webhook leg, device and global alike, so the event can never be delivered
-// cross-device via the global webhook. Chatwoot keeps its own per-device resolution. The
+// cross-device via the global webhook (device.* alerts excepted, see
+// forwardDeviceAlertToGlobalWebhook). Chatwoot keeps its own per-device resolution. The
 // resolve error is returned so the caller (and the managed spool) can see the failure.
 func forwardPayloadWithResolvedWebhookConfig(ctx context.Context, payload map[string]any, eventName string, webhookConfig *domainChatStorage.DeviceWebhookConfig, resolveErr error) error {
+	if resolveErr != nil && isDeviceAlertEvent(eventName) {
+		return forwardDeviceAlertToGlobalWebhook(ctx, payload, eventName, resolveErr)
+	}
 	// WHATSAPP_WEBHOOK_DEVICE_FAIL_CLOSED selects LEO managed delivery: the device leg
 	// is admitted to the durable spool, and no global or direct in-process leg runs.
 	managedDelivery := config.WhatsappWebhookDeviceFailClosed

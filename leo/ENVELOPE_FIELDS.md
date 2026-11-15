@@ -75,6 +75,4 @@ No orchestrator consumer yet on 244b268e; the fields above are the SPEC contract
 - Auto-download OFF: `{"url": ..., "caption": ...}` (image/video), `{"url", "filename"}` (document), `{"url"}` (audio/sticker).
 - Auto-download ON: image/video `"<path>"` string without caption, `{"path", "caption"}` with caption;
   document always `{"path", "caption"?, "filename"?}`; audio/sticker `"<path>"` string.
-- Known gap (pre-existing, identical on v9.6 `origin/main`): the orchestrator normalizer reads
-  `media_path`/`mime_type` from the object shape, GoWA emits `path` and no mime type. The string
-  shape works; a captioned image/document object resolves to an empty media path on the orch side.
+- The orchestrator accepts both `path` and `media_path` for the object shape (`channels/whatsapp/media.py` `_FILE_PATH_KEYS`).
