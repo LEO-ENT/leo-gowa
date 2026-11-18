@@ -303,6 +303,10 @@ func preparePollWebhookPayload(ctx context.Context, client *whatsmeow.Client, st
 			}
 		}
 		names, hashes, status := resolvePollSelections(definition, vote.GetSelectedOptions())
+		if status == pollResolutionDefinitionMissing {
+			// No identifiers: the vote is delivered degraded, this only makes the gap visible.
+			logrus.Warn("Poll vote delivered without a stored poll definition")
+		}
 		payload.SelectedOptions = &names
 		payload.SelectedOptionHashes = &hashes
 		payload.ResolutionStatus = status
